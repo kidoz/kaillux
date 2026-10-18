@@ -1,0 +1,51 @@
+services:
+  kaillux:
+    build: .
+    image: kaillux:latest
+    container_name: kaillux
+    restart: unless-stopped
+    ports:
+      # Admin UI & REST API (local access only)
+      - "127.0.0.1:8080:8080"
+      # Kaillera Connect (UDP)
+      - "27888:27888/udp"
+      # Kaillera Data Ports (UDP)
+      - "27889-27924:27889-27924/udp"
+      # Relay connect port: uncomment together with the relay settings below.
+      # The data-port range above must also cover the backend's assigned ports.
+      # - "27887:27887/udp"
+    environment:
+      # Server configuration (override defaults)
+      MASTER_LIST_SERVER_NAME: "My Kaillux Server"
+      MASTER_LIST_SERVER_LOCATION: "Docker"
+      # MASTER_LIST_SERVER_CONNECT_ADDRESS: "your.public.ip"
+      SERVER_MAX_USERS: "25"
+      SERVER_MAX_PING: "250"
+      # Set ADMIN_PASSWORD in the shell before starting Compose.
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set ADMIN_PASSWORD to a strong unique password}"
+      # Relay mode (disabled by default)
+      # RELAY_ENABLED: "true"
+      # RELAY_BACKEND_HOST: "backend-server"
+      # RELAY_BACKEND_PORT: "27888"
+    # Uses the image's bundled access rules by default. To use custom rules,
+    # copy src/main/resources/access.cfg to ./access.cfg and uncomment:
+    # volumes:
+    #   - type: bind
+    #     source: ./access.cfg
+    #     target: /app/access.cfg
+    #     read_only: true
+    #     bind:
+    #       create_host_path: false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M

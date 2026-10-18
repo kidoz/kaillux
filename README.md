@@ -51,9 +51,25 @@ Configuration files are installed to `/etc/kaillux/`.
 ### Docker
 
 ```bash
-docker build -t kaillux .
-docker run -p 8080:8080 -p 27888:27888/udp -p 27889-27899:27889-27899/udp kaillux
+export ADMIN_PASSWORD='choose-a-strong-unique-password'
+docker compose up -d --build
 ```
+
+Compose requires a nonempty `ADMIN_PASSWORD`. Set `ADMIN_USERNAME` to override
+the default username `admin`. The admin UI is available locally at
+`http://127.0.0.1:8080/admin/`; UDP ports 27888 and 27889–27924 are published
+for game clients. If you change the maximum user count, also adjust the data-port
+range to cover `max-users + extra-ports + 1` ports.
+
+The image includes default access rules. For custom rules, copy
+`src/main/resources/access.cfg` to `access.cfg` in the project root and uncomment
+the `volumes` block in `compose.yaml`. The mount supports hot-reload and fails
+clearly if the host file is missing, without creating a directory in its place.
+
+For relay mode, uncomment the UDP 27887 port mapping and the relay environment
+settings in `compose.yaml`, then set the backend host and port. The published
+data-port range must cover the ports assigned by the backend server. Clients
+connect to the relay on UDP 27887.
 
 ### Manual
 
