@@ -1,0 +1,31 @@
+[versions]
+spring-boot = "4.1.1"
+spring-dependency-management = "1.1.7"
+springdoc = "3.1.1"
+spotless = "8.10.4"
+spotbugs-plugin = "6.5.13"
+spotbugs-tool = "4.10.5"
+checkstyle = "14.3.0"
+jacoco = "0.8.15"
+# Keep the formatter pinned to preserve the repository's existing formatting.
+eclipse-formatter = "4.35"
+
+[libraries]
+# Versions for these libraries are managed by Spring Boot's dependency management.
+spring-boot-starter-web = { module = "org.springframework.boot:spring-boot-starter-web" }
+spring-boot-starter-actuator = { module = "org.springframework.boot:spring-boot-starter-actuator" }
+spring-boot-starter-security = { module = "org.springframework.boot:spring-boot-starter-security" }
+spring-boot-starter-restclient = { module = "org.springframework.boot:spring-boot-starter-restclient" }
+spring-boot-starter-validation = { module = "org.springframework.boot:spring-boot-starter-validation" }
+spring-boot-starter-test = { module = "org.springframework.boot:spring-boot-starter-test" }
+spring-security-test = { module = "org.springframework.security:spring-security-test" }
+micrometer-registry-prometheus = { module = "io.micrometer:micrometer-registry-prometheus" }
+slf4j-jcl = { module = "org.slf4j:jcl-over-slf4j" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+springdoc-openapi-webmvc-ui = { module = "org.springdoc:springdoc-openapi-starter-webmvc-ui", version.ref = "springdoc" }
+
+[plugins]
+spring-boot = { id = "org.springframework.boot", version.ref = "spring-boot" }
+spring-dependency-management = { id = "io.spring.dependency-management", version.ref = "spring-dependency-management" }
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
+spotbugs = { id = "com.github.spotbugs", version.ref = "spotbugs-plugin" }

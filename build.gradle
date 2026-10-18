@@ -4,11 +4,11 @@ import com.github.spotbugs.snom.SpotBugsTask
 
 plugins {
     id 'java'
-    id 'org.springframework.boot' version '4.0.1'
-    id 'io.spring.dependency-management' version '1.1.7'
-    id 'com.diffplug.spotless' version '8.1.0'
+    alias(libs.plugins.spring.boot)
+    alias(libs.plugins.spring.dependency.management)
+    alias(libs.plugins.spotless)
     id 'checkstyle'
-    id 'com.github.spotbugs' version '6.4.8'
+    alias(libs.plugins.spotbugs)
     id 'jacoco'
 }
 
@@ -31,26 +31,26 @@ configurations.configureEach {
 }
 
 dependencies {
-    implementation 'org.springframework.boot:spring-boot-starter-web'
-    implementation 'org.springframework.boot:spring-boot-starter-actuator'
-    implementation 'org.springframework.boot:spring-boot-starter-security'
-    implementation 'org.springframework.boot:spring-boot-starter-restclient'
-    implementation 'io.micrometer:micrometer-registry-prometheus'
+    implementation libs.spring.boot.starter.web
+    implementation libs.spring.boot.starter.actuator
+    implementation libs.spring.boot.starter.security
+    implementation libs.spring.boot.starter.restclient
+    implementation libs.micrometer.registry.prometheus
 
     // Validation support for @ConfigurationProperties
-    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation libs.spring.boot.starter.validation
 
     // OpenAPI/Swagger documentation
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.4'
+    implementation libs.springdoc.openapi.webmvc.ui
 
     // Logging: SLF4J + Logback (Spring Boot includes Logback by default)
     // Bridge for libraries that still use commons-logging API
-    implementation 'org.slf4j:jcl-over-slf4j:2.0.17'
+    implementation libs.slf4j.jcl
 
     // Testing
-    testImplementation 'org.springframework.boot:spring-boot-starter-test'
-    testImplementation 'org.springframework.security:spring-security-test'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation libs.spring.boot.starter.test
+    testImplementation libs.spring.security.test
+    testRuntimeOnly libs.junit.platform.launcher
 
 }
 
@@ -72,7 +72,7 @@ tasks.named('test') {
 spotless {
     java {
         target 'src/*/java/**/*.java'
-        eclipse('4.35').configFile(rootProject.file('config/eclipse-formatter.xml'))
+        eclipse(libs.versions.eclipse.formatter.get()).configFile(rootProject.file('config/eclipse-formatter.xml'))
         removeUnusedImports()
         trimTrailingWhitespace()
         endWithNewline()
@@ -80,7 +80,7 @@ spotless {
 }
 
 checkstyle {
-    toolVersion = '12.3.1'
+    toolVersion = libs.versions.checkstyle.get()
     configFile = file("${rootDir}/config/checkstyle/checkstyle.xml")
     ignoreFailures = false
     maxWarnings = 0        // All checkstyle warnings have been fixed
@@ -94,7 +94,7 @@ tasks.withType(Checkstyle).configureEach {
 }
 
 spotbugs {
-    toolVersion = '4.9.8'
+    toolVersion = libs.versions.spotbugs.tool.get()
     ignoreFailures = false
     effort.set(Effort.valueOf('MAX'))           // More thorough analysis
     reportLevel.set(Confidence.valueOf('MEDIUM'))  // Catch more real bugs
@@ -126,7 +126,7 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 jacoco {
-    toolVersion = '0.8.14'
+    toolVersion = libs.versions.jacoco.get()
 }
 
 jacocoTestReport {
