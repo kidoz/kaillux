@@ -54,6 +54,19 @@ dependencies {
 
 }
 
+tasks.named('processResources') {
+    // The admin UI is built separately by npm/Vite; its TypeScript sources do not
+    // belong in the server artifact. The Docker build copies the built bundle
+    // into static/admin before packaging.
+    exclude 'static/admin/src/**'
+    exclude 'static/admin/node_modules/**'
+    exclude 'static/admin/package.json'
+    exclude 'static/admin/package-lock.json'
+    exclude 'static/admin/vite.config.ts'
+    exclude 'static/admin/tsconfig.json'
+    exclude 'static/admin/biome.json'
+}
+
 tasks.named('test') {
     useJUnitPlatform {
         // Exclude load tests by default
