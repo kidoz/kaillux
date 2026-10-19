@@ -3,9 +3,13 @@ package su.kidoz.kaillera.access;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.NoSuchElementException;
 
 import su.kidoz.util.EmuLinkerExecutor;
@@ -80,7 +84,14 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
                             + " in the application directory or specify path via configuration.");
                 }
                 try {
-                    accessFile = new File(url.toURI());
+                    if ("file".equals(url.getProtocol())) {
+                        accessFile = new File(url.toURI());
+                    } else {
+                        // Nested-jar URLs are not hierarchical, so new File(uri) throws
+                        // IllegalArgumentException. Extract the packaged resource to a
+                        // temporary file that the parser can read.
+                        accessFile = extractClasspathAccessFile(url);
+                    }
                 } catch (URISyntaxException e) {
                     throw new FileNotFoundException(
                             "Cannot read access file from classpath in packaged deployment. "
@@ -98,6 +109,23 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
         }
 
         log.info("Loading access rules from: {}", accessFile.getAbsolutePath());
+    }
+
+    private File extractClasspathAccessFile(URL url) throws FileNotFoundException {
+        try (InputStream in = url.openStream()) {
+            Path tempFile = Files.createTempFile("kaillux-access-", ".cfg");
+            Files.copy(in, tempFile, StandardCopyOption.REPLACE_EXISTING);
+            File file = tempFile.toFile();
+            file.deleteOnExit();
+            log.info("Extracted packaged access file to: {}", file.getAbsolutePath());
+            return file;
+        } catch (IOException e) {
+            FileNotFoundException failure = new FileNotFoundException(
+                    "Cannot read access file from classpath in packaged deployment. Place "
+                            + DEFAULT_ACCESS_FILE + " in the application directory.");
+            failure.initCause(e);
+            throw failure;
+        }
     }
 
     @Override
