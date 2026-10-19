@@ -1,8 +1,11 @@
 package su.kidoz.kaillera.protocol;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.net.InetAddress;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -14,6 +17,7 @@ import su.kidoz.config.ServerConfig;
 import su.kidoz.config.ServerConfigs;
 import su.kidoz.config.ServerInfrastructure;
 import su.kidoz.kaillera.access.AccessManager;
+import su.kidoz.kaillera.metrics.GameMetricsCollector;
 import su.kidoz.kaillera.metrics.ServerMetrics;
 import su.kidoz.kaillera.service.ServerPolicyServices;
 import su.kidoz.kaillera.controller.KailleraServerController;
@@ -124,7 +128,10 @@ class ProtocolE2ETest {
         ServerConfigs configs = new ServerConfigs(serverConfig, gameConfig, masterListConfig);
         ServerPolicyServices policyServices = new ServerPolicyServices(loginValidator,
                 chatModerationService, announcementService);
-        ServerMetrics serverMetrics = new ServerMetrics(new TestStatsCollector(), null);
+        GameMetricsCollector gameMetricsCollector = new GameMetricsCollector(
+                new SimpleMeterRegistry(), gameManager);
+        ServerMetrics serverMetrics = new ServerMetrics(new TestStatsCollector(),
+                gameMetricsCollector);
 
         // Create server
         server = new KailleraServerImpl(infrastructure, configs, policyServices, serverMetrics,
@@ -343,6 +350,140 @@ class ProtocolE2ETest {
             }
         } finally {
             client1.close();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    @DisplayName("Should play a complete two-player game over UDP")
+    void shouldPlayCompleteGameOverUdp() throws Exception {
+        UdpKailleraClient owner = new UdpKailleraClient("localhost", TEST_PORT, "E2EGameOwner");
+        UdpKailleraClient player = new UdpKailleraClient("localhost", TEST_PORT, "E2EGamePlayer");
+
+        try {
+            assertTrue(owner.connect(TIMEOUT_MS), "Owner should connect");
+            assertTrue(owner.login(TIMEOUT_MS), "Owner should login");
+            assertTrue(owner.waitForUserId(TIMEOUT_MS), "Owner should learn its user ID");
+
+            assertTrue(player.connect(TIMEOUT_MS), "Player should connect");
+            assertTrue(player.login(TIMEOUT_MS), "Player should login");
+            assertTrue(player.waitForUserId(TIMEOUT_MS), "Player should learn its user ID");
+
+            int gameId = owner.createGame("E2EGameROM", TIMEOUT_MS);
+            assertTrue(gameId > 0, "Owner should receive the created game ID");
+            assertTrue(owner.isInGame(), "Owner should join the created game");
+
+            assertTrue(player.joinGame(gameId, TIMEOUT_MS), "Player should join the game");
+            assertTrue(player.isInGame(), "Player should be in the game");
+
+            assertTrue(owner.startGame(TIMEOUT_MS), "Owner should start the game");
+            assertTrue(player.waitForGameStarted(TIMEOUT_MS),
+                    "Player should receive the start notification");
+            assertEquals(1, owner.getPlayerNumber(), "Owner should be player 1");
+            assertEquals(2, player.getPlayerNumber(), "Player should be player 2");
+
+            owner.playerReady();
+            player.playerReady();
+            assertTrue(owner.waitForAllReady(TIMEOUT_MS), "Owner should see all players ready");
+            assertTrue(player.waitForAllReady(TIMEOUT_MS), "Player should see all players ready");
+            assertTrue(owner.isGameStarted(), "Game should be started");
+
+            byte[] ownerInput = {0x01, 0x02, 0x03, 0x04};
+            byte[] playerInput = {0x05, 0x06, 0x07, 0x08};
+            byte[] expectedFrame = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
+
+            owner.sendGameData(ownerInput);
+            player.sendGameData(playerInput);
+            assertTrue(owner.waitForGameDataCount(1, TIMEOUT_MS),
+                    "Owner should receive assembled game data");
+            assertTrue(player.waitForGameDataCount(1, TIMEOUT_MS),
+                    "Player should receive assembled game data");
+            assertArrayEquals(expectedFrame, owner.getReceivedGameData().get(0),
+                    "Owner should receive both players' input");
+            assertArrayEquals(expectedFrame, player.getReceivedGameData().get(0),
+                    "Player should receive both players' input");
+
+            // Key 0 is the first payload each client sent after the game started.
+            owner.sendCachedGameData(0);
+            player.sendCachedGameData(0);
+            assertTrue(owner.waitForGameDataCount(2, TIMEOUT_MS),
+                    "Owner should receive the cached frame");
+            assertTrue(player.waitForGameDataCount(2, TIMEOUT_MS),
+                    "Player should receive the cached frame");
+            assertArrayEquals(expectedFrame, owner.getReceivedGameData().get(1),
+                    "Cached frame should replay the same input");
+
+            owner.gameChat("good luck");
+            player.gameChat("gg");
+            assertTrue(owner.waitForGameChat(2, TIMEOUT_MS),
+                    "Owner should receive both game chat messages");
+            assertTrue(player.waitForGameChat(2, TIMEOUT_MS),
+                    "Player should receive both game chat messages");
+            // The two clients' chats are processed by independent server threads, so
+            // only the contents are deterministic, not their order.
+            assertTrue(owner.getGameChatMessages().contains("E2EGameOwner: good luck"));
+            assertTrue(owner.getGameChatMessages().contains("E2EGamePlayer: gg"));
+
+            player.dropGame();
+            assertTrue(owner.waitForDroppedPlayer(TIMEOUT_MS),
+                    "Owner should be notified that the player dropped");
+            assertEquals("E2EGamePlayer", owner.getLastDroppedPlayer());
+
+            player.quitGame();
+            assertTrue(player.waitForGameQuit(TIMEOUT_MS), "Player should leave the game");
+            assertFalse(player.isInGame(), "Player should no longer be in the game");
+
+            owner.quit("Game over");
+            player.quit("Game over");
+            waitForUserCount(0, TIMEOUT_MS);
+            assertEquals(0, server.getNumUsers(), "Server should have no users");
+        } finally {
+            owner.close();
+            player.close();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    @DisplayName("Should kick a player from a game over UDP")
+    void shouldKickPlayerOverUdp() throws Exception {
+        UdpKailleraClient owner = new UdpKailleraClient("localhost", TEST_PORT, "E2EKickOwner");
+        UdpKailleraClient player = new UdpKailleraClient("localhost", TEST_PORT, "E2EKickPlayer");
+
+        try {
+            assertTrue(owner.connect(TIMEOUT_MS), "Owner should connect");
+            assertTrue(owner.login(TIMEOUT_MS), "Owner should login");
+            assertTrue(owner.waitForUserId(TIMEOUT_MS), "Owner should learn its user ID");
+
+            assertTrue(player.connect(TIMEOUT_MS), "Player should connect");
+            assertTrue(player.login(TIMEOUT_MS), "Player should login");
+            assertTrue(player.waitForUserId(TIMEOUT_MS), "Player should learn its user ID");
+
+            int gameId = owner.createGame("E2EKickROM", TIMEOUT_MS);
+            assertTrue(gameId > 0, "Owner should receive the created game ID");
+            assertTrue(player.joinGame(gameId, TIMEOUT_MS), "Player should join the game");
+
+            owner.gameKick(player.getUserId());
+
+            assertTrue(player.waitForGameQuit(TIMEOUT_MS), "Kicked player should leave the game");
+            assertFalse(player.isInGame(), "Kicked player should no longer be in the game");
+            assertTrue(owner.waitForPlayerQuit(player.getClientName(), TIMEOUT_MS),
+                    "Owner should see the player quit the game");
+
+            owner.quit("Kick test complete");
+            player.quit("Kick test complete");
+            waitForUserCount(0, TIMEOUT_MS);
+            assertEquals(0, server.getNumUsers(), "Server should have no users");
+        } finally {
+            owner.close();
+            player.close();
+        }
+    }
+
+    private void waitForUserCount(int expected, long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (server.getNumUsers() != expected && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
         }
     }
 
