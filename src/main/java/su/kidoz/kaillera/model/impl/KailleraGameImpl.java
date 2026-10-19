@@ -226,6 +226,11 @@ public final class KailleraGameImpl implements KailleraGame {
                 throw new GameChatException("Empty message");
             }
 
+            int maxLength = server.getMaxChatLength();
+            if (maxLength > 0 && message.length() > maxLength) {
+                throw new GameChatException("Chat message too long");
+            }
+
             log.info(user + ", " + this + " gamechat: " + message);
             addEvent(new GameChatEvent(this, user, message));
         } finally {
@@ -244,6 +249,8 @@ public final class KailleraGameImpl implements KailleraGame {
     }
 
     public void kick(KailleraUser user, int userID) throws GameKickException {
+        KailleraUserImpl target = null;
+
         writeLock.lock();
         try {
             if (!user.equals(getOwner())) {
@@ -260,25 +267,31 @@ public final class KailleraGameImpl implements KailleraGame {
 
             for (KailleraUserImpl player : players) {
                 if (player.getID() == userID) {
-                    try {
-                        log.info(user + " kicked: " + userID + " from " + this);
-                        kickedUsers.add(userID);
-                        player.quitGame();
-                        return;
-                    } catch (Exception e) {
-                        // this shouldn't happen
-                        log.error(
-                                "Caught exception while making user quit game! This shouldn't happen!",
-                                e);
-                    }
+                    target = player;
+                    kickedUsers.add(userID);
+                    break;
                 }
             }
 
-            log.warn(user + " kick failed: user " + userID + " not found in: " + this);
-            throw new GameKickException(
-                    EmuLang.getString("KailleraGameImpl.GameKickErrorUserNotFound"));
+            if (target == null) {
+                log.warn(user + " kick failed: user " + userID + " not found in: " + this);
+                throw new GameKickException(
+                        EmuLang.getString("KailleraGameImpl.GameKickErrorUserNotFound"));
+            }
         } finally {
             writeLock.unlock();
+        }
+
+        // Call quitGame() without holding the game write lock. quitGame() takes the
+        // user monitor, while that user's own quit path takes the user monitor and
+        // then this game's write lock; holding the write lock here would invert the
+        // order and deadlock.
+        log.info(user + " kicked: " + userID + " from " + this);
+        try {
+            target.quitGame();
+        } catch (Exception e) {
+            // this shouldn't happen
+            log.error("Caught exception while making user quit game! This shouldn't happen!", e);
         }
     }
 
@@ -397,18 +410,19 @@ public final class KailleraGameImpl implements KailleraGame {
             if (autoFireDetector != null)
                 autoFireDetector.start(players.size());
 
-            playerActionQueues = new PlayerActionQueue[players.size()];
-            for (int i = 0; i < playerActionQueues.length; i++) {
+            PlayerActionQueue[] queues = new PlayerActionQueue[players.size()];
+            for (int i = 0; i < queues.length; i++) {
                 KailleraUserImpl player = players.get(i);
                 int playerNumber = (i + 1);
-                playerActionQueues[i] = new PlayerActionQueue(playerNumber, player, getNumPlayers(),
-                        bufferSize, timeoutMillis, true);
+                queues[i] = new PlayerActionQueue(playerNumber, player, getNumPlayers(), bufferSize,
+                        timeoutMillis, true, readerIndex -> queues[readerIndex].isSynched());
                 player.setPlayerNumber(playerNumber);
                 log.info(this + ": " + player + " is player number " + playerNumber);
 
                 if (autoFireDetector != null)
                     autoFireDetector.addPlayer(player, playerNumber);
             }
+            playerActionQueues = queues;
 
             if (statsCollector != null)
                 statsCollector.gameStarted(server, this);
@@ -557,8 +571,13 @@ public final class KailleraGameImpl implements KailleraGame {
                 log.info(this + ": game desynched: game closed!");
             }
 
-            for (KailleraUserImpl player : players)
+            for (KailleraUserImpl player : players) {
+                // Detached players must not stay in STATUS_PLAYING, otherwise
+                // createGame()/joinGame() reject them for the rest of the session.
+                if (player.getStatus() == KailleraUser.STATUS_PLAYING)
+                    player.setStatus(KailleraUser.STATUS_IDLE);
                 player.setGame(null);
+            }
 
             if (autoFireDetector != null)
                 autoFireDetector.stop();
@@ -602,10 +621,15 @@ public final class KailleraGameImpl implements KailleraGame {
     }
 
     public void addData(KailleraUser user, int playerNumber, byte[] data) throws GameDataException {
+        PlayerActionQueue[] queues;
+        int actions;
+        int numPlayers;
+        int bytesPerAction;
+
         writeLock.lock();
         try {
-            PlayerActionQueue[] queues = playerActionQueues;
-            int actions = actionsPerMessage; // local copy for thread-safety
+            queues = playerActionQueues;
+            actions = actionsPerMessage; // local copy for thread-safety
 
             if (queues == null)
                 return;
@@ -615,7 +639,7 @@ public final class KailleraGameImpl implements KailleraGame {
                 return;
             }
 
-            int numPlayers = queues.length;
+            numPlayers = queues.length;
 
             // Validate playerNumber bounds
             if (playerNumber < 1 || playerNumber > numPlayers) {
@@ -625,60 +649,76 @@ public final class KailleraGameImpl implements KailleraGame {
                         playerNumber, numPlayers);
             }
 
-            int bytesPerAction = (data.length / actions);
-            int timeoutCounter = 0;
-            int actionCounter;
-            int playerCounter;
-
-            // Check for integer overflow before array allocation
-            if (bytesPerAction <= 0 || numPlayers > Integer.MAX_VALUE / actions
-                    || (numPlayers * actions) > Integer.MAX_VALUE / bytesPerAction) {
-                log.error(this + ": addData failed: array size overflow");
-                throw new GameDataException("Invalid data size", data, actions, playerNumber,
-                        numPlayers);
-            }
-            int arraySize = (numPlayers * actions * bytesPerAction);
-
             if (!synched) {
                 throw new GameDataException(EmuLang.getString("KailleraGameImpl.DesynchedWarning"),
                         data, actions, playerNumber, numPlayers);
             }
 
-            queues[(playerNumber - 1)].addActions(data);
-
-            if (autoFireDetector != null)
-                autoFireDetector.addData(playerNumber, data, bytesPerAction);
-
-            byte[] response = new byte[arraySize];
-            for (actionCounter = 0; actionCounter < actions; actionCounter++) {
-                for (playerCounter = 0; playerCounter < numPlayers; playerCounter++) {
-                    while (synched) {
-                        try {
-                            queues[playerCounter]
-                                    .getAction(playerNumber, response,
-                                            ((actionCounter * (numPlayers * bytesPerAction))
-                                                    + (playerCounter * bytesPerAction)),
-                                            bytesPerAction);
-                            break;
-                        } catch (PlayerTimeoutException e) {
-                            e.setTimeoutNumber(++timeoutCounter);
-                            handleTimeout(e);
-                        }
-                    }
-                }
+            // Each payload must contain a whole number of actions, and it must be able
+            // to fit in the per-player ring buffer. Truncating the stride or letting a
+            // single oversized payload wrap the ring corrupts framing for every player.
+            if (data.length <= 0 || data.length % actions != 0 || data.length > bufferSize) {
+                log.warn(this + ": addData failed: invalid payload length " + data.length
+                        + " (actions: " + actions + ", buffer: " + bufferSize + ")");
+                throw new GameDataException("Invalid game data length: " + data.length);
             }
 
-            if (!synched)
-                throw new GameDataException(EmuLang.getString("KailleraGameImpl.DesynchedWarning"),
-                        data, bytesPerAction, playerNumber, numPlayers);
+            bytesPerAction = data.length / actions;
 
-            ((KailleraUserImpl) user).addEvent(new GameDataEvent(this, response));
+            // Check for integer overflow before array allocation
+            if (numPlayers > Integer.MAX_VALUE / data.length) {
+                log.error(this + ": addData failed: array size overflow");
+                throw new GameDataException("Invalid data size");
+            }
         } finally {
             writeLock.unlock();
         }
+
+        // Enqueue and assemble outside the game write lock. Holding it while waiting
+        // for every player's queue would block the other players' UDP threads from
+        // enqueueing their own actions, so the wait could never be satisfied.
+        if (!queues[(playerNumber - 1)].addActions(data)) {
+            throw new GameDataException(EmuLang.getString("KailleraGameImpl.DesynchedWarning"),
+                    data, actions, playerNumber, numPlayers);
+        }
+
+        if (autoFireDetector != null)
+            autoFireDetector.addData(playerNumber, data, bytesPerAction);
+
+        int arraySize = (numPlayers * data.length);
+        byte[] response = new byte[arraySize];
+        int timeoutCounter = 0;
+        int actionCounter;
+        int playerCounter;
+
+        for (actionCounter = 0; actionCounter < actions; actionCounter++) {
+            for (playerCounter = 0; playerCounter < numPlayers; playerCounter++) {
+                while (synched && playerActionQueues == queues) {
+                    try {
+                        queues[playerCounter]
+                                .getAction(playerNumber, response,
+                                        ((actionCounter * (numPlayers * bytesPerAction))
+                                                + (playerCounter * bytesPerAction)),
+                                        bytesPerAction);
+                        break;
+                    } catch (PlayerTimeoutException e) {
+                        e.setTimeoutNumber(++timeoutCounter);
+                        handleTimeout(e);
+                    }
+                }
+            }
+        }
+
+        // A restart replaces the queue array; a response assembled against the old
+        // game state must not be delivered to the new one.
+        if (!synched || playerActionQueues != queues)
+            throw new GameDataException(EmuLang.getString("KailleraGameImpl.DesynchedWarning"),
+                    data, actions, playerNumber, numPlayers);
+
+        ((KailleraUserImpl) user).addEvent(new GameDataEvent(this, response));
     }
 
-    // Called from addData() which already holds writeLock - lock is reentrant
+    // Called from addData(); acquires the write lock itself.
     private void handleTimeout(PlayerTimeoutException e) {
         writeLock.lock();
         try {

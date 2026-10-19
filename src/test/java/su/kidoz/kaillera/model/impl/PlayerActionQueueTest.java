@@ -245,4 +245,75 @@ class PlayerActionQueueTest {
             assertNull(queue.getLastTimeout());
         }
     }
+
+    @Nested
+    @DisplayName("Ring buffer capacity")
+    class RingBufferCapacity {
+
+        @Test
+        @DisplayName("should read a completely full buffer instead of timing out")
+        void shouldReadFullBuffer() throws PlayerTimeoutException {
+            queue.setSynched(true);
+
+            byte[] actions = new byte[BUFFER_SIZE];
+            for (int i = 0; i < actions.length; i++)
+                actions[i] = (byte) i;
+
+            assertTrue(queue.addActions(actions));
+
+            byte[] result = new byte[BUFFER_SIZE];
+            queue.getAction(1, result, 0, BUFFER_SIZE);
+
+            assertArrayEquals(actions, result);
+        }
+
+        @Test
+        @DisplayName("should not overwrite unconsumed actions")
+        void shouldNotOverwriteUnconsumedActions() throws PlayerTimeoutException {
+            queue.setSynched(true);
+
+            byte[] first = new byte[BUFFER_SIZE];
+            for (int i = 0; i < first.length; i++)
+                first[i] = (byte) (i + 1);
+            assertTrue(queue.addActions(first));
+
+            // No reader has consumed anything yet, so a second payload cannot fit.
+            assertFalse(queue.addActions(new byte[]{1, 2, 3, 4}));
+
+            byte[] result = new byte[BUFFER_SIZE];
+            queue.getAction(1, result, 0, BUFFER_SIZE);
+            assertArrayEquals(first, result);
+        }
+
+        @Test
+        @DisplayName("should reject a payload larger than the buffer")
+        void shouldRejectOversizedPayload() {
+            queue.setSynched(true);
+
+            assertFalse(queue.addActions(new byte[BUFFER_SIZE + 1]));
+        }
+
+        @Test
+        @DisplayName("should accept new actions after readers make room")
+        void shouldWriteAgainAfterReadersMakeRoom() throws PlayerTimeoutException {
+            queue.setSynched(true);
+
+            byte[] first = new byte[BUFFER_SIZE - 3];
+            assertTrue(queue.addActions(first));
+
+            byte[] second = new byte[]{9, 8, 7, 6};
+            // The queue is too full until every reader consumes the first payload.
+            assertFalse(queue.addActions(second));
+
+            byte[] result = new byte[first.length];
+            queue.getAction(1, result, 0, result.length);
+            queue.getAction(2, result, 0, result.length);
+            assertArrayEquals(first, result);
+
+            assertTrue(queue.addActions(second));
+            byte[] secondResult = new byte[second.length];
+            queue.getAction(1, secondResult, 0, second.length);
+            assertArrayEquals(second, secondResult);
+        }
+    }
 }

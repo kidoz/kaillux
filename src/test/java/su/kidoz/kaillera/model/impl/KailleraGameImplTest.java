@@ -7,14 +7,20 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 import java.net.InetSocketAddress;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import su.kidoz.kaillera.access.AccessManager;
 import su.kidoz.kaillera.model.KailleraGame;
 import su.kidoz.kaillera.model.KailleraUser;
 import su.kidoz.kaillera.model.event.DefaultEventDispatcher;
 import su.kidoz.kaillera.model.event.EventDispatcher;
+import su.kidoz.kaillera.model.exception.GameDataException;
 import su.kidoz.kaillera.model.exception.JoinGameException;
 import su.kidoz.kaillera.model.exception.StartGameException;
 import org.junit.jupiter.api.BeforeEach;
@@ -353,6 +359,82 @@ class KailleraGameImplTest {
 
             assertTrue(detailed.contains("TestROM"));
             assertTrue(detailed.contains("id=1"));
+        }
+    }
+
+    @Nested
+    @DisplayName("Game Data")
+    class GameDataHandling {
+
+        @Mock
+        private AccessManager accessManager;
+
+        private KailleraUserImpl player2;
+
+        @BeforeEach
+        void setUpPlayingGame() throws Exception {
+            when(server.getAccessManager()).thenReturn(accessManager);
+            when(accessManager.getAccess(any())).thenReturn(AccessManager.ACCESS_NORMAL);
+            when(server.getAllowSinglePlayer()).thenReturn(false);
+
+            owner.setConnectionType((byte) 1);
+            owner.setClientType("TestEmu");
+
+            // actionsPerMessage is captured from the owner at construction.
+            game = new KailleraGameImpl(1, "TestROM", owner, server, BUFFER_SIZE, TIMEOUT_MILLIS,
+                    DESYNCH_TIMEOUTS);
+
+            InetSocketAddress address2 = new InetSocketAddress("127.0.0.2", 27889);
+            player2 = new KailleraUserImpl(2, "v086", address2, eventDispatcher, server);
+            player2.setName("Player2");
+            player2.setSocketAddress(address2);
+            player2.setConnectionType(owner.getConnectionType());
+            player2.setClientType(owner.getClientType());
+
+            game.join(owner);
+            game.join(player2);
+            game.start(owner);
+            game.ready(owner, 1);
+            game.ready(player2, 2);
+        }
+
+        @Test
+        @DisplayName("concurrent addData from all players should not deadlock")
+        void concurrentAddDataShouldComplete() throws Exception {
+            byte[] ownerData = {1, 2, 3, 4};
+            byte[] player2Data = {5, 6, 7, 8};
+
+            ExecutorService executor = Executors.newFixedThreadPool(2);
+            try {
+                Future<?> ownerFuture = executor
+                        .submit(() -> assertDoesNotThrow(() -> game.addData(owner, 1, ownerData)));
+                Future<?> player2Future = executor.submit(
+                        () -> assertDoesNotThrow(() -> game.addData(player2, 2, player2Data)));
+
+                assertDoesNotThrow(() -> ownerFuture.get(2, TimeUnit.SECONDS));
+                assertDoesNotThrow(() -> player2Future.get(2, TimeUnit.SECONDS));
+            } finally {
+                executor.shutdownNow();
+            }
+        }
+
+        @Test
+        @DisplayName("payload that is not a multiple of actions should be rejected")
+        void unalignedPayloadShouldBeRejected() throws Exception {
+            owner.setConnectionType((byte) 2);
+            player2.setConnectionType((byte) 2);
+
+            KailleraGameImpl game2 = new KailleraGameImpl(2, "TestROM", owner, server, BUFFER_SIZE,
+                    TIMEOUT_MILLIS, DESYNCH_TIMEOUTS);
+            game2.join(owner);
+            game2.join(player2);
+            game2.start(owner);
+            game2.ready(owner, 1);
+            game2.ready(player2, 2);
+
+            // Two actions per message, so a three-byte payload cannot be framed.
+            assertThrows(GameDataException.class,
+                    () -> game2.addData(owner, 1, new byte[]{1, 2, 3}));
         }
     }
 }

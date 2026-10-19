@@ -273,6 +273,10 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
         return statsCollector;
     }
 
+    public int getMaxChatLength() {
+        return serverConfig.getMaxChatLength();
+    }
+
     GameMetricsCollector getGameMetricsCollector() {
         return gameMetricsCollector;
     }
@@ -349,6 +353,8 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
 
         int userID = user.getID();
 
+        KailleraUserImpl reconnectUser = null;
+
         connectionLock.lock();
         try {
             KailleraUser userFromList = userManager.getUser(userID);
@@ -366,17 +372,10 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
                 loginValidator.validateAddressMatch(user, userFromList);
                 loginValidator.validateEmulator(user, access);
 
-                // Check for duplicate login - may return a user to force quit
-                KailleraUserImpl reconnectUser = loginValidator.checkDuplicateLogin(user,
-                        userFromList, getUsers(), access);
-                if (reconnectUser != null) {
-                    try {
-                        quitInternal(reconnectUser,
-                                EmuLang.getString("KailleraServerImpl.ForcedQuitReconnected"));
-                    } catch (Exception e) {
-                        log.error("Error forcing " + reconnectUser + " quit for reconnect!", e);
-                    }
-                }
+                // Check for duplicate login - may return a user to force quit after the
+                // lock is released
+                reconnectUser = loginValidator.checkDuplicateLogin(user, userFromList, getUsers(),
+                        access);
 
                 // Passed all checks - complete login
                 userImpl.setAccess(access);
@@ -394,6 +393,19 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
             }
         } finally {
             connectionLock.unlock();
+        }
+
+        if (reconnectUser != null) {
+            // Force the old connection out without holding connectionLock. quitGame()
+            // takes the user monitor, while the quitting user's own synchronized quit()
+            // path holds that monitor and then takes connectionLock; doing the forced
+            // quit under connectionLock would invert the lock order and deadlock.
+            try {
+                quitInternal(reconnectUser,
+                        EmuLang.getString("KailleraServerImpl.ForcedQuitReconnected"));
+            } catch (Exception e) {
+                log.error("Error forcing " + reconnectUser + " quit for reconnect!", e);
+            }
         }
     }
 

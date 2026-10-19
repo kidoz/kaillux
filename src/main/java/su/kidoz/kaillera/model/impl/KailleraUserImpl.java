@@ -477,6 +477,10 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         if (currentGame == null) {
             log.debug(this + " quit game failed: Not in a game");
             // throw new QuitGameException("You are not in a game!");
+            // A game may have been closed underneath us, leaving the user detached
+            // while still marked as playing. Let them create/join games again.
+            if (status == KailleraUser.STATUS_PLAYING)
+                setStatus(KailleraUser.STATUS_IDLE);
             return;
         }
 
@@ -644,7 +648,13 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
                 else if (event instanceof StopFlagEvent)
                     break;
 
-                eventDispatcher.dispatch(event);
+                try {
+                    eventDispatcher.dispatch(event);
+                } catch (RuntimeException e) {
+                    // One failed event (for example a malformed outbound message) must
+                    // not terminate this user's entire event-processing thread.
+                    log.error(this + " failed to dispatch event: " + event, e);
+                }
 
                 if (event instanceof GameStartedEvent) {
                     setStatus(KailleraUser.STATUS_PLAYING);
