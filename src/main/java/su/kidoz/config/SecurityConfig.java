@@ -1,5 +1,7 @@
 package su.kidoz.config;
 
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.List;
 
 import jakarta.annotation.PostConstruct;
@@ -31,11 +33,12 @@ public class SecurityConfig {
     // List of insecure default passwords that should trigger a warning
     private static final List<String> INSECURE_PASSWORDS = List.of("changeme", "admin", "password",
             "123456");
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     @Value("${admin.username:admin}")
     private String adminUsername;
 
-    @Value("${admin.password:admin}")
+    @Value("${admin.password:}")
     private String adminPassword;
 
     @Value("${admin.security.failOnInsecureCredentials:false}")
@@ -49,6 +52,18 @@ public class SecurityConfig {
 
     @PostConstruct
     public void validateCredentials() {
+        // Never fall back to a well-known default password. When none is
+        // configured, generate one so the admin API is not reachable with
+        // published credentials.
+        if (adminPassword == null || adminPassword.isBlank()) {
+            adminPassword = generateRandomPassword();
+            log.warn("*".repeat(70));
+            log.warn("No admin password configured; generated random admin password: {}",
+                    adminPassword);
+            log.warn("Set admin.password (or ADMIN_PASSWORD) to choose your own.");
+            log.warn("*".repeat(70));
+        }
+
         boolean insecureUsername = DEFAULT_USERNAME.equals(adminUsername);
         boolean insecurePassword = INSECURE_PASSWORDS.stream()
                 .anyMatch(p -> p.equalsIgnoreCase(adminPassword));
@@ -70,6 +85,12 @@ public class SecurityConfig {
                 log.warn(message);
             }
         }
+    }
+
+    private static String generateRandomPassword() {
+        byte[] bytes = new byte[24];
+        SECURE_RANDOM.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
     private String buildSecurityWarningMessage(boolean insecureUsername, boolean insecurePassword) {
