@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.List;
 
 import su.kidoz.kaillera.controller.messaging.MessageFormatException;
 import su.kidoz.kaillera.controller.messaging.ParseException;
@@ -257,6 +258,24 @@ class V086BundleTest {
             V086Message parsedMessage = parsedBundle.getMessages()[0];
             assertTrue(parsedMessage instanceof ClientACK);
             assertEquals(42, parsedMessage.getNumber());
+        }
+
+        @Test
+        @DisplayName("should parse PlayerInformation with no other players")
+        void shouldParseEmptyPlayerInformation() throws Exception {
+            PlayerInformation information = new PlayerInformation(1, List.of());
+            V086Bundle bundle = new V086Bundle(new V086Message[]{information});
+
+            ByteBuffer buffer = ByteBuffer.allocate(64);
+            buffer.order(ByteOrder.LITTLE_ENDIAN);
+            bundle.writeTo(buffer);
+            buffer.flip();
+
+            V086Bundle parsed = V086Bundle.parse(buffer);
+
+            assertEquals(1, parsed.getNumMessages());
+            PlayerInformation parsedInformation = (PlayerInformation) parsed.getMessages()[0];
+            assertEquals(0, parsedInformation.getNumPlayers());
         }
 
         @Test

@@ -69,7 +69,10 @@ public class PlayerInformation extends V086Message {
 
     public static PlayerInformation parse(int messageNumber, ByteBuffer buffer)
             throws ParseException, MessageFormatException {
-        if (buffer.remaining() < 14)
+        // The body is a validation byte plus a 4-byte player count. The count may
+        // legitimately be zero (first player in a game), so only those 5 bytes are
+        // required before reading the count.
+        if (buffer.remaining() < 5)
             throw new ParseException("Failed byte count validation!");
 
         byte b = buffer.get();
