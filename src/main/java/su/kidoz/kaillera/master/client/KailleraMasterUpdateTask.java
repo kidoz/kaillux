@@ -33,16 +33,12 @@ public class KailleraMasterUpdateTask implements MasterListUpdateTask {
     }
 
     public void touchMaster() {
-        List<String> createdGamesList = statsCollector.getStartedGamesList();
+        List<String> createdGamesList = statsCollector.drainStartedGamesList();
 
         StringBuilder createdGames = new StringBuilder();
-        synchronized (createdGamesList) {
-            for (String game : createdGamesList) {
-                createdGames.append(game);
-                createdGames.append("|");
-            }
-
-            createdGamesList.clear();
+        for (String game : createdGamesList) {
+            createdGames.append(game);
+            createdGames.append("|");
         }
 
         StringBuilder waitingGames = new StringBuilder();

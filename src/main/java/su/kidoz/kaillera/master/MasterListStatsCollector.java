@@ -14,7 +14,13 @@ public class MasterListStatsCollector implements StatsCollector {
     }
 
     public synchronized List<String> getStartedGamesList() {
-        return startedGamesList;
+        return new ArrayList<>(startedGamesList);
+    }
+
+    public synchronized List<String> drainStartedGamesList() {
+        List<String> drained = new ArrayList<>(startedGamesList);
+        startedGamesList.clear();
+        return drained;
     }
 
     public synchronized void clearStartedGamesList() {

@@ -124,16 +124,26 @@ public class MasterListUpdaterImpl implements MasterListUpdater, Runnable, Smart
                     break;
 
                 log.info("MasterListUpdater touching masters...");
-                statsCollector.getStartedGamesList(); // Fetch list (currently unused, for future
-                                                      // use)
 
-                if (emulinkerMasterTask != null)
-                    emulinkerMasterTask.touchMaster();
+                // Keep the updater thread alive if a single touch fails.
+                if (emulinkerMasterTask != null) {
+                    try {
+                        emulinkerMasterTask.touchMaster();
+                    } catch (Exception e) {
+                        log.error("Failed to touch EmuLinker master list", e);
+                    }
+                }
 
-                if (kailleraMasterTask != null)
-                    kailleraMasterTask.touchMaster();
-
-                statsCollector.clearStartedGamesList();
+                if (kailleraMasterTask != null) {
+                    try {
+                        kailleraMasterTask.touchMaster();
+                    } catch (Exception e) {
+                        log.error("Failed to touch Kaillera master list", e);
+                    }
+                } else if (statsCollector != null) {
+                    // No Kaillera updater consumes the list; discard it to avoid growth.
+                    statsCollector.clearStartedGamesList();
+                }
             }
         } finally {
             isRunning = false;
