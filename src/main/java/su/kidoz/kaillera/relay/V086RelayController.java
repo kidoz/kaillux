@@ -102,6 +102,15 @@ public class V086RelayController extends UDPRelay {
                     EmuUtil.dumpBuffer(receiveBuffer), e);
             incrementParseErrors();
             return null;
+        } catch (RuntimeException e) {
+            // Malformed input can surface as an unchecked exception (for example a
+            // BufferUnderflowException). Never let it escape into the relay's receive
+            // loop, which would disable the whole port.
+            receiveBuffer.rewind();
+            log.warn("Malformed message from {}: {}", EmuUtil.formatSocketAddress(fromAddress),
+                    EmuUtil.dumpBuffer(receiveBuffer), e);
+            incrementParseErrors();
+            return null;
         }
 
         log.debug("-> {}", inBundle);
@@ -149,6 +158,11 @@ public class V086RelayController extends UDPRelay {
             receiveBuffer.rewind();
             log.warn("Invalid message format from backend: {}", EmuUtil.dumpBuffer(receiveBuffer),
                     e);
+            incrementParseErrors();
+            return null;
+        } catch (RuntimeException e) {
+            receiveBuffer.rewind();
+            log.warn("Malformed message from backend: {}", EmuUtil.dumpBuffer(receiveBuffer), e);
             incrementParseErrors();
             return null;
         }

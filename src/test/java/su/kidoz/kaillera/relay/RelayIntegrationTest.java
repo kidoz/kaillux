@@ -1,14 +1,21 @@
 package su.kidoz.kaillera.relay;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -18,6 +25,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import su.kidoz.config.RelayConfig;
+import su.kidoz.kaillera.controller.v086.protocol.PlayerDrop;
 import su.kidoz.util.EmuLinkerExecutor;
 
 /**
@@ -144,6 +152,90 @@ class RelayIntegrationTest {
             // Initial values are -1 (no messages received yet)
             assertEquals(-1, v086Relay.getLastClientMessageNumber());
             assertEquals(-1, v086Relay.getLastServerMessageNumber());
+        }
+
+        @Test
+        @DisplayName("should forward a valid bundle to the backend")
+        void shouldForwardValidBundle() throws Exception {
+            try (DatagramSocket backend = new DatagramSocket(0, InetAddress.getLoopbackAddress())) {
+                int listenPort = freeUdpPort();
+                V086RelayController v086Relay = new V086RelayController(threadPool, listenPort,
+                        new java.net.InetSocketAddress(TEST_BACKEND_HOST, backend.getLocalPort()),
+                        config.getMaxConnections(), config.getBufferSize());
+
+                v086Relay.start();
+                try {
+                    byte[] bundle = clientAckBundle();
+                    try (DatagramSocket client = new DatagramSocket()) {
+                        client.send(new DatagramPacket(bundle, bundle.length,
+                                InetAddress.getLoopbackAddress(), listenPort));
+                    }
+
+                    backend.setSoTimeout(2000);
+                    DatagramPacket received = new DatagramPacket(new byte[2048], 2048);
+                    backend.receive(received);
+
+                    assertEquals(bundle.length, received.getLength());
+                } finally {
+                    v086Relay.stop();
+                }
+            }
+        }
+
+        private byte[] clientAckBundle() {
+            ByteBuffer buffer = ByteBuffer.allocate(24);
+            buffer.order(ByteOrder.LITTLE_ENDIAN);
+            buffer.put((byte) 1); // one message
+            buffer.putShort((short) 1); // message number
+            buffer.putShort((short) 18); // message length
+            buffer.put((byte) 0x06); // ClientACK
+            buffer.put((byte) 0x00);
+            buffer.putInt(0);
+            buffer.putInt(1);
+            buffer.putInt(2);
+            buffer.putInt(3);
+
+            byte[] bytes = new byte[buffer.position()];
+            buffer.flip();
+            buffer.get(bytes);
+            return bytes;
+        }
+
+        private int freeUdpPort() throws Exception {
+            try (DatagramSocket socket = new DatagramSocket(0)) {
+                return socket.getLocalPort();
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("Malformed Packet Handling")
+    class MalformedPacketHandling {
+
+        @Test
+        @DisplayName("truncated PlayerDrop should be rejected, not thrown")
+        void truncatedPlayerDropShouldBeRejected() {
+            V086RelayController v086Relay = new V086RelayController(threadPool, TEST_LISTEN_PORT,
+                    new java.net.InetSocketAddress(TEST_BACKEND_HOST, TEST_BACKEND_PORT),
+                    config.getMaxConnections(), config.getBufferSize());
+
+            // PlayerDrop whose username fills the message without a NUL terminator.
+            ByteBuffer buffer = ByteBuffer.allocate(16);
+            buffer.order(ByteOrder.LITTLE_ENDIAN);
+            buffer.put((byte) 1); // one message
+            buffer.putShort((short) 1); // message number
+            buffer.putShort((short) 9); // message length: ID + 8 bytes
+            buffer.put(PlayerDrop.ID);
+            buffer.put("abcdefgh".getBytes(StandardCharsets.ISO_8859_1));
+            buffer.flip();
+
+            java.net.InetSocketAddress address = new java.net.InetSocketAddress(TEST_BACKEND_HOST,
+                    TEST_BACKEND_PORT);
+            ByteBuffer result = assertDoesNotThrow(
+                    () -> v086Relay.processClientToServer(buffer, address, address));
+
+            assertNull(result);
+            assertEquals(1, v086Relay.getParseErrors());
         }
     }
 

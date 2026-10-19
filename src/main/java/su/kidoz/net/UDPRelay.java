@@ -3,9 +3,13 @@ package su.kidoz.net;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -38,6 +42,18 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
     private static final int DEFAULT_MAX_CONNECTIONS = 100;
     private static final int DEFAULT_BUFFER_SIZE = 2048;
 
+    /** Idle timeout after which a client handler is closed and removed. */
+    private static final long CLIENT_IDLE_TIMEOUT_MS = 300_000L;
+
+    /** Selector timeout and interval between idle-client checks. */
+    private static final long IDLE_CHECK_INTERVAL_MS = 1000L;
+
+    /**
+     * Cap on datagrams drained per selector wakeup so cleanup still runs under
+     * load.
+     */
+    private static final int MAX_PACKETS_PER_ITERATION = 256;
+
     private final ExecutorService threadPool;
     private final int listenPort;
     private final InetSocketAddress serverSocketAddress;
@@ -45,6 +61,7 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
     private final int bufferSize;
 
     private DatagramChannel listenChannel;
+    private volatile Selector selector;
     private volatile boolean running = false;
     private volatile boolean stopFlag = false;
 
@@ -243,6 +260,9 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
 
         try {
             listenChannel = DatagramChannel.open();
+            // Non-blocking so the main loop can periodically evict idle client
+            // handlers even when no packets arrive.
+            listenChannel.configureBlocking(false);
             // Bind to wildcard address (0.0.0.0) to accept connections on all interfaces
             listenChannel.socket().bind(new InetSocketAddress(listenPort));
             log.info("{} bound to port {} on all interfaces", this, listenPort);
@@ -267,6 +287,11 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
 
         log.info("{} stopping...", this);
         stopFlag = true;
+
+        Selector currentSelector = selector;
+        if (currentSelector != null) {
+            currentSelector.wakeup();
+        }
 
         try {
             if (listenChannel != null) {
@@ -304,43 +329,38 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
         log.info("{} main thread running...", this);
 
         try {
+            selector = Selector.open();
+            listenChannel.register(selector, SelectionKey.OP_READ);
+
             while (!stopFlag) {
-                ByteBuffer buffer = ByteBuffer.allocate(bufferSize);
-                InetSocketAddress clientAddress = (InetSocketAddress) listenChannel.receive(buffer);
+                // Blocks until a datagram is ready, with a periodic wakeup so idle
+                // handlers can be evicted even when no traffic arrives.
+                selector.select(IDLE_CHECK_INTERVAL_MS);
+                evictIdleClients();
 
-                if (clientAddress == null) {
-                    continue;
-                }
-
-                ClientHandler clientHandler = clients.get(clientAddress);
-                if (clientHandler == null) {
-                    if (clients.size() >= maxConnections) {
-                        log.warn("Connection limit reached ({}), rejecting client {}",
-                                maxConnections, EmuUtil.formatSocketAddress(clientAddress));
-                        continue;
+                for (int i = 0; i < MAX_PACKETS_PER_ITERATION && !stopFlag; i++) {
+                    ByteBuffer buffer = ByteBuffer.allocate(bufferSize);
+                    InetSocketAddress clientAddress = (InetSocketAddress) listenChannel
+                            .receive(buffer);
+                    if (clientAddress == null) {
+                        break;
                     }
-
-                    try {
-                        clientHandler = new ClientHandler(clientAddress);
-                    } catch (Exception e) {
-                        log.error("Failed to start new ClientHandler for {}",
-                                EmuUtil.formatSocketAddress(clientAddress), e);
-                        continue;
-                    }
-
-                    clients.put(clientAddress, clientHandler);
-                    totalConnections.incrementAndGet();
-                    threadPool.execute(clientHandler);
+                    handleClientPacket(clientAddress, buffer);
                 }
-
-                buffer.flip();
-                clientHandler.send(buffer);
             }
         } catch (Exception e) {
             if (!stopFlag) {
                 log.error("{} main thread caught exception: {}", this, e.getMessage(), e);
             }
         } finally {
+            running = false;
+            try {
+                if (selector != null) {
+                    selector.close();
+                }
+            } catch (Exception e) {
+                log.debug("Error closing selector", e);
+            }
             try {
                 if (listenChannel != null) {
                     listenChannel.close();
@@ -353,6 +373,60 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
         log.info("{} main thread exiting...", this);
     }
 
+    private void handleClientPacket(InetSocketAddress clientAddress, ByteBuffer buffer) {
+        ClientHandler clientHandler = clients.get(clientAddress);
+        if (clientHandler == null) {
+            if (clients.size() >= maxConnections) {
+                log.warn("Connection limit reached ({}), rejecting client {}", maxConnections,
+                        EmuUtil.formatSocketAddress(clientAddress));
+                return;
+            }
+
+            try {
+                clientHandler = new ClientHandler(clientAddress);
+            } catch (Exception e) {
+                log.error("Failed to start new ClientHandler for {}",
+                        EmuUtil.formatSocketAddress(clientAddress), e);
+                return;
+            }
+
+            clients.put(clientAddress, clientHandler);
+            totalConnections.incrementAndGet();
+            threadPool.execute(clientHandler);
+        }
+
+        buffer.flip();
+        try {
+            clientHandler.send(buffer);
+        } catch (Exception e) {
+            // One malformed packet must not stop the relay listener.
+            incrementParseErrors();
+            log.warn("Failed to process packet from {}: {}",
+                    EmuUtil.formatSocketAddress(clientAddress), e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Closes client handlers that have seen no traffic in either direction for
+     * longer than the idle timeout.
+     */
+    private void evictIdleClients() {
+        long now = System.currentTimeMillis();
+
+        List<ClientHandler> handlers;
+        synchronized (clients) {
+            handlers = new ArrayList<>(clients.values());
+        }
+
+        for (ClientHandler handler : handlers) {
+            if (handler.isIdle(now, CLIENT_IDLE_TIMEOUT_MS)) {
+                log.info("Closing idle relay client {}",
+                        EmuUtil.formatSocketAddress(handler.getClientSocketAddress()));
+                handler.close();
+            }
+        }
+    }
+
     /**
      * Handles bidirectional communication for a single client connection.
      */
@@ -361,11 +435,13 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
         private final InetSocketAddress clientSocketAddress;
         private final DatagramChannel clientChannel;
         private final long connectTime;
+        private volatile long lastActivity;
         private volatile boolean closed = false;
 
         protected ClientHandler(InetSocketAddress clientSocketAddress) throws Exception {
             this.clientSocketAddress = clientSocketAddress;
             this.connectTime = System.currentTimeMillis();
+            this.lastActivity = this.connectTime;
             clientChannel = DatagramChannel.open();
             clientChannel.socket().bind(null);
             log.info("ClientHandler for {} bound to port {}",
@@ -388,6 +464,26 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
         }
 
         /**
+         * Returns the time of the last packet activity in milliseconds since epoch.
+         */
+        public long getLastActivity() {
+            return lastActivity;
+        }
+
+        /**
+         * Returns true if this handler has seen no traffic for the given timeout.
+         */
+        protected boolean isIdle(long now, long timeoutMs) {
+            return (now - lastActivity) > timeoutMs;
+        }
+
+        private void touch() {
+            long now = System.currentTimeMillis();
+            lastActivity = now;
+            lastActivityTime.set(now);
+        }
+
+        /**
          * Sends a packet from client to server.
          */
         protected void send(ByteBuffer buffer) throws Exception {
@@ -396,7 +492,7 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
             if (newBuffer != null) {
                 int bytes = clientChannel.send(newBuffer, serverSocketAddress);
                 bytesRelayed.addAndGet(bytes);
-                lastActivityTime.set(System.currentTimeMillis());
+                touch();
             }
         }
 
@@ -434,13 +530,21 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
                     }
 
                     buffer.flip();
+                    touch();
 
-                    ByteBuffer newBuffer = processServerToClient(buffer, receiveAddress,
-                            clientSocketAddress);
-                    if (newBuffer != null) {
-                        int bytes = listenChannel.send(newBuffer, clientSocketAddress);
-                        bytesRelayed.addAndGet(bytes);
-                        lastActivityTime.set(System.currentTimeMillis());
+                    try {
+                        ByteBuffer newBuffer = processServerToClient(buffer, receiveAddress,
+                                clientSocketAddress);
+                        if (newBuffer != null) {
+                            int bytes = listenChannel.send(newBuffer, clientSocketAddress);
+                            bytesRelayed.addAndGet(bytes);
+                        }
+                    } catch (RuntimeException e) {
+                        // A malformed backend packet must not terminate this handler.
+                        incrementParseErrors();
+                        log.warn("Malformed packet from backend for {}: {}",
+                                EmuUtil.formatSocketAddress(clientSocketAddress), e.getMessage(),
+                                e);
                     }
                 }
             } catch (Exception e) {
