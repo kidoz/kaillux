@@ -275,6 +275,12 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
             buffer.rewind();
             log.warn(toString() + " received invalid message: " + EmuUtil.dumpBuffer(buffer), e);
             return;
+        } catch (RuntimeException e) {
+            // A malformed packet must not terminate this client's receive loop.
+            buffer.rewind();
+            log.warn(toString() + " failed to parse message bundle: " + EmuUtil.dumpBuffer(buffer),
+                    e);
+            return;
         }
 
         if (inBundle.getNumMessages() == 0) {
@@ -311,7 +317,12 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
                             continue;
                         }
 
-                        action.performAction(messages[i], this);
+                        try {
+                            action.performAction(messages[i], this);
+                        } catch (RuntimeException e) {
+                            // Keep the receive loop alive even if a single action fails.
+                            log.error(toString() + " action failed: " + messages[i], e);
+                        }
                     }
                 }
             }

@@ -1,5 +1,6 @@
 package su.kidoz.kaillera.controller.v086.protocol;
 
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -92,12 +93,13 @@ public class V086Bundle extends ByteBufferMessage {
 
     public int getLength() {
         if (length == -1) {
-            length = 0; // Initialize to 0 before summing
+            length = 1; // Bundle count byte, followed by the messages
             for (int i = 0; i < numToWrite; i++) {
                 if (messages[i] == null) {
                     break;
                 }
-                length += messages[i].getLength();
+                // Include the per-message number/length header.
+                length += messages[i].getLength() + 4;
             }
         }
         return length;
@@ -118,13 +120,39 @@ public class V086Bundle extends ByteBufferMessage {
 
     public void writeTo(ByteBuffer buffer) {
         buffer.order(ByteOrder.LITTLE_ENDIAN);
-        // no real need for unsigned
-        // UnsignedUtil.putUnsignedByte(buffer, numToWrite);
-        buffer.put((byte) numToWrite);
+
+        if (buffer.remaining() < 1) {
+            log.warn(
+                    "Ran out of output buffer space, consider increasing the controllers.v086.bufferSize setting!");
+            return;
+        }
+
+        // Determine how many messages fit before writing the count byte. Writing the
+        // count first and then skipping an oversized message would leave receivers
+        // with a bundle that claims more messages than it contains.
+        int count = 0;
+        int available = buffer.remaining() - 1;
         for (int i = 0; i < numToWrite; i++) {
             if (messages[i] == null)
                 break;
 
+            int required = messages[i].getLength() + 4;
+            if (required > available)
+                break;
+
+            available -= required;
+            count++;
+        }
+
+        if (count < numToWrite) {
+            log.warn("Only " + count + " of " + numToWrite
+                    + " outbound messages fit in the output buffer, consider increasing the controllers.v086.bufferSize setting!");
+        }
+
+        // no real need for unsigned
+        // UnsignedUtil.putUnsignedByte(buffer, numToWrite);
+        buffer.put((byte) count);
+        for (int i = 0; i < count; i++) {
             messages[i].writeTo(buffer);
         }
     }
@@ -162,7 +190,7 @@ public class V086Bundle extends ByteBufferMessage {
             // Note: messageNumber range check removed - getUnsignedShort always returns
             // 0-65535
 
-            if (messageNumber <= lastMessageID) {
+            if (!isNewerMessage(messageNumber, lastMessageID)) {
                 // buffer.position((buffer.position() + messageLength));
 
                 // will break here instead of looking for more messages, should improve speed
@@ -183,9 +211,26 @@ public class V086Bundle extends ByteBufferMessage {
             // messages.push(V086Message.parse(messageNumber, messageLength, buffer));
             // messages.addFirst(V086Message.parse(messageNumber, messageLength, buffer));
             // messages.add(V086Message.parse(messageNumber, messageLength, buffer));
-            messages[parsedCount] = V086Message.parse(messageNumber, messageLength, buffer);
+            try {
+                messages[parsedCount] = V086Message.parse(messageNumber, messageLength, buffer);
+            } catch (BufferUnderflowException e) {
+                throw new ParseException("Message appears truncated", e);
+            }
         }
 
         return new V086Bundle(messages, parsedCount);
+    }
+
+    /**
+     * Compares 16-bit message numbers with wrap-around. Message numbers restart at
+     * zero after 0xFFFF, so a plain numeric comparison stops accepting messages
+     * after the first wrap.
+     */
+    private static boolean isNewerMessage(int candidate, int last) {
+        if (last < 0)
+            return true;
+
+        int diff = (candidate - last) & 0xFFFF;
+        return diff > 0 && diff < 0x8000;
     }
 }

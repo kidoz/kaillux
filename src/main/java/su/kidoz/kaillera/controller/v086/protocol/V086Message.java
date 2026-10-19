@@ -212,7 +212,10 @@ public abstract class V086Message extends ByteBufferMessage {
 
     public void writeTo(ByteBuffer buffer) {
         int len = getLength();
-        if (len > buffer.remaining()) {
+        // getLength() covers the body plus the message ID; the wire format also
+        // prefixes a 4-byte number/length header.
+        int required = len + 4;
+        if (required > buffer.remaining()) {
             log.warn(
                     "Ran out of output buffer space, consider increasing the controllers.v086.bufferSize setting!");
         } else {

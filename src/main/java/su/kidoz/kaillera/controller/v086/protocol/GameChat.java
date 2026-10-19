@@ -37,9 +37,10 @@ public abstract class GameChat extends V086Message {
     public abstract String toString();
 
     public int getBodyLength() {
-        // return (charset.encode(userName).remaining() +
-        // charset.encode(message).remaining() + 2);
-        return (userName.length() + message.length() + 2);
+        // Lengths are byte counts: writeBodyTo() writes the strings in the wire
+        // charset, so counting UTF-16 chars under-reports multi-byte characters and
+        // lets the message overflow the output buffer.
+        return (userName.getBytes(charset).length + message.getBytes(charset).length + 2);
     }
 
     public void writeBodyTo(ByteBuffer buffer) {

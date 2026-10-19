@@ -58,6 +58,9 @@ public abstract class PlayerDrop extends V086Message {
             throw new ParseException("Failed byte count validation!");
 
         String userName = EmuUtil.readString(buffer, 0x00, charset);
+        if (!buffer.hasRemaining())
+            throw new ParseException("Failed byte count validation!");
+
         byte playerNumber = buffer.get();
 
         if (userName.isEmpty() && playerNumber == 0)

@@ -258,6 +258,27 @@ class V086BundleTest {
             assertTrue(parsedMessage instanceof ClientACK);
             assertEquals(42, parsedMessage.getNumber());
         }
+
+        @Test
+        @DisplayName("should write a consistent count when a message does not fit")
+        void shouldWriteConsistentCountWhenMessageDoesNotFit() throws Exception {
+            ClientACK first = new ClientACK(1);
+            ClientACK second = new ClientACK(2);
+            V086Bundle bundle = new V086Bundle(new V086Message[]{first, second});
+
+            // Room for the count byte and one message only.
+            int singleMessageSize = 1 + first.getLength() + 4;
+            ByteBuffer buffer = ByteBuffer.allocate(singleMessageSize);
+            buffer.order(ByteOrder.LITTLE_ENDIAN);
+
+            bundle.writeTo(buffer);
+            buffer.flip();
+
+            // The bundle must not claim a message whose bytes were not written.
+            V086Bundle parsed = V086Bundle.parse(buffer);
+            assertEquals(1, parsed.getNumMessages());
+            assertEquals(1, parsed.getMessages()[0].getNumber());
+        }
     }
 
     @Nested
@@ -336,6 +357,30 @@ class V086BundleTest {
             V086Bundle bundle = V086Bundle.parse(buffer, -1);
 
             assertEquals(2, bundle.getNumMessages());
+        }
+
+        @Test
+        @DisplayName("should accept message number 0 after lastMessageID 0xFFFF")
+        void shouldAcceptMessageAfterWrap() throws Exception {
+            ByteBuffer buffer = ByteBuffer.allocate(24);
+            buffer.order(ByteOrder.LITTLE_ENDIAN);
+
+            buffer.put((byte) 1);
+            buffer.putShort((short) 0); // wrapped message number
+            buffer.putShort((short) 18);
+            buffer.put((byte) 0x06);
+            buffer.put((byte) 0x00);
+            buffer.putInt(0);
+            buffer.putInt(1);
+            buffer.putInt(2);
+            buffer.putInt(3);
+
+            buffer.flip();
+
+            V086Bundle bundle = V086Bundle.parse(buffer, 0xFFFF);
+
+            assertEquals(1, bundle.getNumMessages());
+            assertEquals(0, bundle.getMessages()[0].getNumber());
         }
     }
 
