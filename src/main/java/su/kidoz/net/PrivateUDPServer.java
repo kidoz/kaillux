@@ -30,7 +30,18 @@ public abstract class PrivateUDPServer extends UDPServer {
     }
 
     protected void handleReceived(ByteBuffer buffer, InetSocketAddress inboundSocketAddress) {
-        // Atomically set remote address on first packet (thread-safe)
+        // The handshake address is the only peer allowed to claim this port.
+        // A datagram from any other address is dropped before the source port
+        // can be pinned, so a scan of the user-port range cannot take the session.
+        if (remoteAddress != null && !remoteAddress.equals(inboundSocketAddress.getAddress())) {
+            log.warn("Rejecting packet from unexpected address: "
+                    + EmuUtil.formatSocketAddress(inboundSocketAddress) + " != "
+                    + remoteAddress.getHostAddress());
+            return;
+        }
+
+        // Pin the source port from the first packet that matches the handshake
+        // address. Later packets must use that same socket.
         remoteSocketAddress.compareAndSet(null, inboundSocketAddress);
         InetSocketAddress currentRemote = remoteSocketAddress.get();
         if (!inboundSocketAddress.equals(currentRemote)) {
