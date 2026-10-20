@@ -160,8 +160,11 @@ public class PlayerActionQueue {
             return;
         }
 
-        if (!synched)
-            return;
+        // No committed bytes. Returning here used to look like a successful read
+        // and let each assembler send its own zero-filled slot.
+        if (!synched) {
+            throw new QueueDesyncedException(thisPlayerNumber);
+        }
 
         throw new PlayerTimeoutException(thisPlayerNumber, thisPlayer);
     }

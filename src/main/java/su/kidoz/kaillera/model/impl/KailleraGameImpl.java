@@ -687,7 +687,9 @@ public final class KailleraGameImpl implements KailleraGame {
 
         int arraySize = (numPlayers * data.length);
         byte[] response = new byte[arraySize];
-        int timeoutCounter = 0;
+        // Consecutive timeouts are counted per lagged player. One assembler's
+        // wait on player A must not advance the desync count of player B.
+        int[] timeoutCounts = new int[numPlayers];
         int actionCounter;
         int playerCounter;
 
@@ -700,9 +702,15 @@ public final class KailleraGameImpl implements KailleraGame {
                                         ((actionCounter * (numPlayers * bytesPerAction))
                                                 + (playerCounter * bytesPerAction)),
                                         bytesPerAction);
+                        timeoutCounts[playerCounter] = 0;
+                        break;
+                    } catch (QueueDesyncedException e) {
+                        // The slot stays the zero it was allocated as. Every
+                        // assembler takes this path when that player has no
+                        // committed input, so they emit the same frame.
                         break;
                     } catch (PlayerTimeoutException e) {
-                        e.setTimeoutNumber(++timeoutCounter);
+                        e.setTimeoutNumber(++timeoutCounts[playerCounter]);
                         handleTimeout(e);
                     }
                 }

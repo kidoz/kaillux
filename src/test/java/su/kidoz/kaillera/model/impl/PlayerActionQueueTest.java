@@ -94,19 +94,29 @@ class PlayerActionQueueTest {
         }
 
         @Test
-        @DisplayName("should ignore actions when not synched")
-        void shouldIgnoreActionsWhenNotSynched() throws PlayerTimeoutException {
+        @DisplayName("should fail when not synched and nothing is committed")
+        void shouldFailWhenNotSynchedAndEmpty() {
             assertFalse(queue.isSynched());
 
             byte[] actions = new byte[]{1, 2, 3, 4};
             queue.addActions(actions);
 
-            // Should not throw and should not block
+            byte[] result = new byte[4];
+            assertThrows(QueueDesyncedException.class, () -> queue.getAction(1, result, 0, 4));
+            assertArrayEquals(new byte[4], result);
+        }
+
+        @Test
+        @DisplayName("should still return input that was committed before desync")
+        void shouldReturnCommittedInputAfterDesync() throws PlayerTimeoutException {
+            queue.setSynched(true);
+            byte[] actions = new byte[]{1, 2, 3, 4};
+            assertTrue(queue.addActions(actions));
+            queue.setSynched(false);
+
             byte[] result = new byte[4];
             queue.getAction(1, result, 0, 4);
-
-            // Result should be zeros since no actions were added
-            assertArrayEquals(new byte[4], result);
+            assertArrayEquals(actions, result);
         }
 
         @Test
