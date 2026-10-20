@@ -54,10 +54,12 @@ dependencies {
 
 }
 
+def adminUiDist = layout.projectDirectory.dir('src/main/resources/static/admin/dist')
+
 tasks.named('processResources') {
-    // The admin UI is built separately by npm/Vite; its TypeScript sources do not
-    // belong in the server artifact. The Docker build copies the built bundle
-    // into static/admin before packaging.
+    // The admin UI is built separately by npm/Vite. Its sources do not belong
+    // in the server artifact; the built bundle is packaged at static/admin/ so
+    // /admin/index.html and /admin/assets/* resolve.
     exclude 'static/admin/src/**'
     exclude 'static/admin/node_modules/**'
     exclude 'static/admin/package.json'
@@ -65,6 +67,30 @@ tasks.named('processResources') {
     exclude 'static/admin/vite.config.ts'
     exclude 'static/admin/tsconfig.json'
     exclude 'static/admin/biome.json'
+    exclude 'static/admin/.gitignore'
+    exclude 'static/admin/index.html'
+    exclude 'static/admin/dist/**'
+    from(adminUiDist) {
+        into 'static/admin'
+    }
+}
+
+tasks.register('verifyAdminUi') {
+    description = 'Verifies that the admin UI bundle exists before packaging or running.'
+    doLast {
+        if (!adminUiDist.asFile.isDirectory()) {
+            throw new GradleException("Admin UI bundle not found at ${adminUiDist.asFile}. "
+                    + "Run 'just admin-build' (or npm run build in the admin directory) first.")
+        }
+    }
+}
+
+tasks.named('bootJar') {
+    dependsOn 'verifyAdminUi'
+}
+
+tasks.named('bootRun') {
+    dependsOn 'verifyAdminUi'
 }
 
 tasks.named('test') {

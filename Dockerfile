@@ -32,8 +32,8 @@ RUN ./gradlew dependencies --no-daemon
 # Copy source
 COPY src src
 
-# Copy built admin UI to the path served by the Vite '/admin/' base
-COPY --from=admin-build /app/admin/dist/ src/main/resources/static/admin/
+# Copy the built admin UI where Gradle packages it into the JAR
+COPY --from=admin-build /app/admin/dist/ src/main/resources/static/admin/dist/
 
 # Build the application
 RUN ./gradlew bootJar --no-daemon

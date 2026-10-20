@@ -17,11 +17,16 @@ emulators by routing player input over the network.
 
 ## Quick start
 
-Build the server:
+Build the server (the admin UI is built first):
 
 ```bash
-./gradlew build
+just build
 ```
+
+`just build` installs the admin UI dependencies, builds the Vite bundle, and then
+packages it into the server JAR with Gradle. Building with `./gradlew build`
+directly requires the bundle to exist (`just admin-build`); otherwise the build
+fails with a message explaining the missing step.
 
 Dependency, plugin, and analysis tool versions are defined in
 [`gradle/libs.versions.toml`](gradle/libs.versions.toml). Spring Boot manages

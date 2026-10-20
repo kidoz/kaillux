@@ -1,9 +1,9 @@
-# Build the project
-build:
+# Build the project (admin UI + server)
+build: admin-install admin-build
     ./gradlew build
 
-# Clean and build the project
-rebuild:
+# Clean and build the project (admin UI + server)
+rebuild: admin-install admin-build
     ./gradlew clean build
 
 # Run the application

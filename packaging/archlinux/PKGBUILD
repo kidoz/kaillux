@@ -7,7 +7,7 @@ arch=('any')
 url="https://github.com/kidoz/kaillux"
 license=('GPL-2.0-only')
 depends=('java-runtime>=25')
-makedepends=('java-environment>=25')
+makedepends=('java-environment>=25' 'nodejs' 'npm')
 backup=('etc/kaillux/application.properties'
         'etc/kaillux/access.cfg'
         'etc/kaillux/logback.xml')
@@ -26,6 +26,9 @@ sha256sums=('SKIP'
 
 build() {
     cd "${srcdir}/${pkgname}-${pkgver}"
+
+    # Build the admin UI; Gradle packages the bundle into the JAR
+    (cd src/main/resources/static/admin && npm ci && npm run build)
 
     # Build with Gradle (skip tests for packaging)
     ./gradlew clean build -x test -x spotbugsMain -x spotbugsTest -x checkstyleMain -x checkstyleTest
