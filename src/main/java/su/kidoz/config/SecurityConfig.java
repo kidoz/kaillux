@@ -5,6 +5,7 @@ import java.util.Base64;
 import java.util.List;
 
 import jakarta.annotation.PostConstruct;
+import jakarta.servlet.http.HttpServletResponse;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,7 +13,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -57,11 +57,15 @@ public class SecurityConfig {
         // published credentials.
         if (adminPassword == null || adminPassword.isBlank()) {
             adminPassword = generateRandomPassword();
-            log.warn("*".repeat(70));
-            log.warn("No admin password configured; generated random admin password: {}",
-                    adminPassword);
-            log.warn("Set admin.password (or ADMIN_PASSWORD) to choose your own.");
-            log.warn("*".repeat(70));
+            // The password is written to the process console only. Sending it
+            // through the logger would store it in every shipped log file.
+            String banner = "*".repeat(70);
+            System.err.println(banner);
+            System.err.println(
+                    "No admin password configured. Generated admin password: " + adminPassword);
+            System.err.println("Set admin.password (or ADMIN_PASSWORD) to choose your own.");
+            System.err.println("This password is not written to the application log.");
+            System.err.println(banner);
         }
 
         boolean insecureUsername = DEFAULT_USERNAME.equals(adminUsername);
@@ -130,7 +134,11 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/**").authenticated()
                         // Static resources and other endpoints are public
                         .anyRequest().permitAll())
-                .httpBasic(Customizer.withDefaults());
+                // Return 401 without WWW-Authenticate. A Basic challenge makes
+                // the browser show its own login dialog and leaves fetch()
+                // waiting, so the admin page cannot report a rejected password.
+                .httpBasic(basic -> basic.authenticationEntryPoint((request, response,
+                        exception) -> response.setStatus(HttpServletResponse.SC_UNAUTHORIZED)));
 
         return http.build();
     }
