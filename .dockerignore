@@ -1,0 +1,35 @@
+# Build artifacts
+build/
+.gradle/
+
+# Admin UI - use fresh npm install in Docker
+src/main/resources/static/admin/node_modules/
+src/main/resources/static/admin/dist/
+
+# Local secrets and environment overrides
+**/.env*
+**/*.local
+
+# Agent tooling (local only)
+.agents/
+.claude/
+.codex/
+ai-agents-standards-v*/
+.mcp.json
+
+# IDE
+.idea/
+**/*.iml
+
+# OS
+**/.DS_Store
+
+# Logs
+**/*.log
+
+# Git
+.git/
+
+# Runtime config (use src/main/resources/access.cfg for build)
+/access.cfg
+compose.yaml
