@@ -460,29 +460,36 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
      */
     private void quitInternal(KailleraUser user, String message)
             throws QuitException, DropGameException, QuitGameException, CloseGameException {
-        if (!user.isLoggedIn()) {
+        KailleraUserImpl userImpl = (KailleraUserImpl) user;
+        // Clear loggedIn before leaving the game or returning, so an in-flight
+        // packet cannot create another game after this quit has been accepted.
+        if (!userImpl.beginQuit()) {
             userManager.removeUser(user.getID());
             log.error(user + " quit failed: Not logged in");
             throw new QuitException(EmuLang.getString("KailleraServerImpl.NotLoggedIn"));
         }
 
-        if (userManager.removeUser(user.getID()) == null)
-            log.error(user + " quit failed: not in user list");
+        try {
+            if (userManager.removeUser(user.getID()) == null)
+                log.error(user + " quit failed: not in user list");
 
-        if (user.getGame() != null)
-            user.quitGame();
+            if (user.getGame() != null)
+                user.quitGame();
 
-        String quitMsg = message.trim();
-        int maxLen = serverConfig.getMaxQuitMessageLength();
-        if (quitMsg.isEmpty() || (maxLen > 0 && quitMsg.length() > maxLen))
-            quitMsg = EmuLang.getString("KailleraServerImpl.StandardQuitMessage");
+            String quitMsg = message.trim();
+            int maxLen = serverConfig.getMaxQuitMessageLength();
+            if (quitMsg.isEmpty() || (maxLen > 0 && quitMsg.length() > maxLen))
+                quitMsg = EmuLang.getString("KailleraServerImpl.StandardQuitMessage");
 
-        log.info(user + " quit: " + quitMsg);
+            log.info(user + " quit: " + quitMsg);
 
-        UserQuitEvent quitEvent = new UserQuitEvent(this, user, quitMsg);
+            UserQuitEvent quitEvent = new UserQuitEvent(this, user, quitMsg);
 
-        addEvent(quitEvent);
-        ((KailleraUserImpl) user).addEvent(quitEvent);
+            addEvent(quitEvent);
+            userImpl.addEvent(quitEvent);
+        } finally {
+            userImpl.closeConnection();
+        }
     }
 
     public void chat(KailleraUser user, String message) throws ChatException, FloodException {

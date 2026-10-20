@@ -217,7 +217,28 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
         controller.registerClientHandler(user.getID(), this);
     }
 
+    @Override
+    public void closeConnection() {
+        closeTransport();
+    }
+
+    @Override
     public void stop() {
+        closeTransport();
+
+        KailleraUser localUser = user;
+        if (localUser != null) {
+            controller.unregisterClientHandler(localUser.getID());
+            localUser.stop();
+            user = null;
+        }
+    }
+
+    /**
+     * Closes the datagram channel and returns the port to the allocator. Does not
+     * stop the user thread. Safe to call more than once.
+     */
+    private void closeTransport() {
         synchronized (this) {
             if (getStopFlag())
                 return;
@@ -233,13 +254,6 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
                         + (portAllocator.availableCount() + 1) + " available");
                 portAllocator.release(port);
             }
-        }
-
-        KailleraUser localUser = user;
-        if (localUser != null) {
-            controller.unregisterClientHandler(localUser.getID());
-            localUser.stop();
-            user = null;
         }
     }
 

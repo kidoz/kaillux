@@ -134,6 +134,30 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         this.loggedIn = loggedIn;
     }
 
+    /**
+     * Marks the user logged out.
+     *
+     * @return false when the user was already logged out
+     */
+    public synchronized boolean beginQuit() {
+        if (!loggedIn) {
+            return false;
+        }
+        loggedIn = false;
+        return true;
+    }
+
+    /**
+     * Closes the datagram channel for this session without waiting for the user
+     * thread to drain its event queue.
+     */
+    public void closeConnection() {
+        KailleraEventListener listener = eventDispatcher.getListener();
+        if (listener != null) {
+            listener.closeConnection();
+        }
+    }
+
     public String getName() {
         return name;
     }
@@ -312,25 +336,14 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
 
     public void stop() {
         synchronized (this) {
-            if (!isRunning) {
-                log.debug(this + "  thread stop request ignored: not running!");
-                return;
-            }
-
             if (stopFlag) {
                 log.debug(this + "  thread stop request ignored: already stopping!");
                 return;
             }
 
+            // Latch the flag even when run() has not started, so a stop that
+            // wins that race is still observed.
             stopFlag = true;
-        }
-
-        // Sleep outside synchronized block to avoid blocking other threads
-        try {
-            Thread.sleep(500);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.debug("Stop sleep interrupted", e);
         }
 
         synchronized (this) {
