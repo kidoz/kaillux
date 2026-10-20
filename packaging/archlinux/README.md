@@ -1,6 +1,7 @@
 # Arch Linux Package
 
 This directory contains files for building an Arch Linux package for Kaillux.
+For the full documentation set, see [the documentation index](../../docs/README.md).
 
 ## Building from local source
 
@@ -72,7 +73,7 @@ Open the required UDP ports:
 
 ```bash
 sudo firewall-cmd --permanent --add-port=27888/udp
-sudo firewall-cmd --permanent --add-port=27889-27899/udp
+sudo firewall-cmd --permanent --add-port=27889-27924/udp
 sudo firewall-cmd --reload
 ```
 
@@ -80,5 +81,10 @@ Or with ufw:
 
 ```bash
 sudo ufw allow 27888/udp
-sudo ufw allow 27889:27899/udp
+sudo ufw allow 27889:27924/udp
 ```
+
+The data-port range is `server.max-users + controllers.v086.extra-ports + 1`
+ports starting at `controllers.v086.port-range-start`. The defaults (25 users,
+10 extra ports) produce 27889–27924. Recalculate it if you change either value;
+see [Network ports](../../docs/reference/network-ports.md).
