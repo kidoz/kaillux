@@ -4,6 +4,7 @@ import su.kidoz.kaillera.controller.v086.action.FatalActionException;
 import su.kidoz.kaillera.controller.v086.action.V086Action;
 
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.util.NoSuchElementException;
 import java.util.Properties;
 import java.util.Scanner;
@@ -66,8 +67,17 @@ public final class AdminCommandAction implements V086Action {
         KailleraServer server = clientHandler.getController().getServer();
         AccessManager accessManager = server.getAccessManager();
         KailleraUser user = clientHandler.getUser();
-        if (accessManager
-                .getAccess(clientHandler.getRemoteInetAddress()) != AccessManager.ACCESS_ADMIN)
+        if (user == null || !user.isLoggedIn())
+            throw new FatalActionException(
+                    "Admin Command Denied: " + user + " is not logged in: " + chat);
+
+        InetSocketAddress peer = clientHandler.getRemoteSocketAddress();
+        InetAddress handshake = clientHandler.getRemoteInetAddress();
+        if (peer == null || handshake == null || !handshake.equals(peer.getAddress()))
+            throw new FatalActionException(
+                    "Admin Command Denied: " + user + " peer is not the connected client: " + chat);
+
+        if (accessManager.getAccess(peer.getAddress()) != AccessManager.ACCESS_ADMIN)
             throw new FatalActionException(
                     "Admin Command Denied: " + user + " does not have Admin access: " + chat);
 

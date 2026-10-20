@@ -4,8 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -16,7 +20,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import su.kidoz.kaillera.access.AccessManager;
 import su.kidoz.kaillera.controller.v086.V086ClientHandler;
+import su.kidoz.kaillera.controller.v086.V086Controller;
+import su.kidoz.kaillera.model.KailleraServer;
 import su.kidoz.kaillera.controller.v086.action.FatalActionException;
 import su.kidoz.kaillera.controller.v086.protocol.Chat_Notification;
 import su.kidoz.kaillera.controller.v086.protocol.Chat_Request;
@@ -105,6 +112,75 @@ class CommandActionsTest {
 
             // Action count is still incremented before the exception
             assertEquals(1, action.getActionPerformedCount());
+        }
+
+        @Test
+        @DisplayName("should not run slash commands before login")
+        void shouldNotRunSlashCommandsBeforeLogin() throws Exception {
+            when(user.isLoggedIn()).thenReturn(false);
+            Chat_Request message = new Chat_Request(1, "/announce pwned");
+
+            action.performAction(message, clientHandler);
+
+            verify(user).chat("/announce pwned");
+            verify(clientHandler, never()).getController();
+        }
+
+    }
+
+    @Nested
+    @DisplayName("AdminCommandAction")
+    class AdminCommandActionTests {
+
+        private AdminCommandAction action;
+
+        @BeforeEach
+        void setUp() {
+            action = new AdminCommandAction();
+        }
+
+        @Test
+        @DisplayName("should reject a command whose peer is not the handshake address")
+        void shouldRejectMismatchedPeer() throws Exception {
+            KailleraServer server = mock(KailleraServer.class);
+            AccessManager accessManager = mock(AccessManager.class);
+            V086Controller controller = mock(V086Controller.class);
+            when(clientHandler.getController()).thenReturn(controller);
+            when(controller.getServer()).thenReturn(server);
+            when(server.getAccessManager()).thenReturn(accessManager);
+            when(user.isLoggedIn()).thenReturn(true);
+            when(clientHandler.getRemoteInetAddress())
+                    .thenReturn(InetAddress.getByName("10.0.0.5"));
+            when(clientHandler.getRemoteSocketAddress())
+                    .thenReturn(new InetSocketAddress("10.1.1.1", 9));
+            when(accessManager.getAccess(InetAddress.getByName("10.0.0.5")))
+                    .thenReturn(AccessManager.ACCESS_ADMIN);
+
+            assertThrows(FatalActionException.class, () -> action
+                    .performAction(new Chat_Request(1, "/announce hello"), clientHandler));
+
+            verify(server, never()).announce("hello", false);
+        }
+
+        @Test
+        @DisplayName("should run a command for the locked admin peer")
+        void shouldRunCommandForLockedAdminPeer() throws Exception {
+            KailleraServer server = mock(KailleraServer.class);
+            AccessManager accessManager = mock(AccessManager.class);
+            V086Controller controller = mock(V086Controller.class);
+            InetAddress address = InetAddress.getByName("10.0.0.5");
+            when(clientHandler.getController()).thenReturn(controller);
+            when(controller.getServer()).thenReturn(server);
+            when(server.getAccessManager()).thenReturn(accessManager);
+            when(user.isLoggedIn()).thenReturn(true);
+            when(clientHandler.getRemoteInetAddress()).thenReturn(address);
+            when(clientHandler.getRemoteSocketAddress())
+                    .thenReturn(new InetSocketAddress(address, 40000));
+            when(accessManager.getAccess(address)).thenReturn(AccessManager.ACCESS_ADMIN);
+
+            action.performAction(new Chat_Request(1, "/announce hello"), clientHandler);
+
+            verify(server).announce("hello", false);
         }
 
     }

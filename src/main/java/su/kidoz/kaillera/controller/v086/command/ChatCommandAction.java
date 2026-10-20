@@ -15,6 +15,7 @@ import su.kidoz.kaillera.controller.v086.protocol.Chat;
 import su.kidoz.kaillera.controller.v086.protocol.Chat_Request;
 import su.kidoz.kaillera.controller.v086.protocol.InformationMessage;
 import su.kidoz.kaillera.controller.v086.protocol.V086Message;
+import su.kidoz.kaillera.model.KailleraUser;
 import su.kidoz.kaillera.model.exception.ActionException;
 import su.kidoz.util.EmuLang;
 
@@ -56,7 +57,9 @@ public final class ChatCommandAction implements V086Action {
             throw new FatalActionException("Received incorrect instance of Chat: " + message);
         }
 
-        if (((Chat) message).getMessage().startsWith(ADMIN_COMMAND_ESCAPE_STRING)) {
+        KailleraUser user = clientHandler.getUser();
+        if (user != null && user.isLoggedIn()
+                && ((Chat) message).getMessage().startsWith(ADMIN_COMMAND_ESCAPE_STRING)) {
             try {
                 adminCommandAction.performAction(message, clientHandler);
                 return;
