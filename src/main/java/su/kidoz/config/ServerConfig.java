@@ -27,6 +27,27 @@ public class ServerConfig {
     @Min(0)
     private int maxUsers = 25;
 
+    /**
+     * In-progress handshakes allowed in addition to {@link #maxUsers}. Zero
+     * disables the cap. These sessions do not consume logged-in slots.
+     */
+    @Min(0)
+    private int maxConnecting = 0;
+
+    /**
+     * In-progress handshakes allowed from one source address. Zero disables the
+     * cap. Logged-in users do not count against it.
+     */
+    @Min(0)
+    private int maxConnectingPerAddress = 0;
+
+    /**
+     * HELLO messages accepted per source address per second. Zero disables the
+     * limit.
+     */
+    @Min(0)
+    private int helloRatePerSecond = 0;
+
     @Min(0)
     private int maxGames = 0;
 
@@ -85,6 +106,30 @@ public class ServerConfig {
 
     public void setMaxUsers(int maxUsers) {
         this.maxUsers = maxUsers;
+    }
+
+    public int getMaxConnecting() {
+        return maxConnecting;
+    }
+
+    public void setMaxConnecting(int maxConnecting) {
+        this.maxConnecting = maxConnecting;
+    }
+
+    public int getMaxConnectingPerAddress() {
+        return maxConnectingPerAddress;
+    }
+
+    public void setMaxConnectingPerAddress(int maxConnectingPerAddress) {
+        this.maxConnectingPerAddress = maxConnectingPerAddress;
+    }
+
+    public int getHelloRatePerSecond() {
+        return helloRatePerSecond;
+    }
+
+    public void setHelloRatePerSecond(int helloRatePerSecond) {
+        this.helloRatePerSecond = helloRatePerSecond;
     }
 
     public int getMaxGames() {

@@ -214,6 +214,7 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
             log.error("Client requested an unhandled protocol "
                     + EmuUtil.formatSocketAddress(fromSocketAddress) + ": "
                     + connectMessage.getProtocol());
+            send(new ConnectMessage_TOO(), fromSocketAddress);
             return;
         }
 
@@ -221,6 +222,7 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
             deniedOtherCount.incrementAndGet();
             log.warn("AccessManager denied connection from "
                     + EmuUtil.formatSocketAddress(fromSocketAddress));
+            send(new ConnectMessage_TOO(), fromSocketAddress);
         } else {
             int privatePort;
 
@@ -232,6 +234,7 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
                     failedToStartCount.incrementAndGet();
                     log.error(protocolController + " failed to start for "
                             + EmuUtil.formatSocketAddress(fromSocketAddress));
+                    send(new ConnectMessage_TOO(), fromSocketAddress);
                     return;
                 }
 
@@ -248,6 +251,7 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
                 deniedOtherCount.incrementAndGet();
                 log.warn(protocolController + " denied connection from "
                         + EmuUtil.formatSocketAddress(fromSocketAddress) + ": " + e.getMessage());
+                send(new ConnectMessage_TOO(), fromSocketAddress);
             }
         }
     }

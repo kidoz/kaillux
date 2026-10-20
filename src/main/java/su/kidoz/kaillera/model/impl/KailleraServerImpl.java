@@ -99,6 +99,7 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
     private final Lock serverLifecycleLock = new ReentrantLock();
     private final Lock connectionLock = new ReentrantLock();
     private final Lock gameLock = new ReentrantLock();
+    private final ConnectionAdmission connectionAdmission = new ConnectionAdmission();
 
     /**
      * Creates a new Kaillera server instance.
@@ -304,14 +305,24 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
 
         connectionLock.lock();
         try {
-            // admins will be allowed in even if the server is full
-            if (getMaxUsers() > 0 && userManager.getNumUsers() >= getMaxUsers()
-                    && !(access > AccessManager.ACCESS_NORMAL)) {
-                log.warn("Connection from " + EmuUtil.formatSocketAddress(clientSocketAddress)
-                        + " denied: Server is full!");
-                throw new ServerFullException(
-                        EmuLang.getString("KailleraServerImpl.LoginDeniedServerFull"));
+            int loggedIn = 0;
+            int connecting = 0;
+            int connectingFromAddress = 0;
+            for (KailleraUserImpl existing : userManager.getUsers()) {
+                if (existing.isLoggedIn()) {
+                    loggedIn++;
+                } else {
+                    connecting++;
+                    if (clientSocketAddress.getAddress()
+                            .equals(existing.getConnectSocketAddress().getAddress())) {
+                        connectingFromAddress++;
+                    }
+                }
             }
+            // Elevated and admin clients still bypass the logged-in cap.
+            // Connecting caps and the hello rate apply to every address.
+            connectionAdmission.admit(clientSocketAddress.getAddress(), access, loggedIn,
+                    connecting, connectingFromAddress, serverConfig);
 
             int userID;
             try {
