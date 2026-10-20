@@ -11,10 +11,10 @@ public final class KailleraServerReleaseInfo implements ReleaseInfo {
     private final String productName = "Kaillux Kaillera Server";
 
     private final int majorVersion = 1;
-    private final int minorVersion = 3;
+    private final int minorVersion = 4;
     private final int buildNumber = 0;
 
-    private final String releaseDate = "01/03/2026";
+    private final String releaseDate = "10/21/2026";
     private final String licenseInfo = "Usage of this software is subject to the terms found in the included license";
     private final String website = "https://github.com/kidoz/kaillux";
 

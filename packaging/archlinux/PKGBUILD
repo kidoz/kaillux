@@ -1,6 +1,6 @@
 # Maintainer: Your Name <your.email@example.com>
 pkgname=kaillux
-pkgver=1.3.0
+pkgver=1.4.0
 pkgrel=1
 pkgdesc="Kaillera network server for emulator-based online multiplayer gaming"
 arch=('any')

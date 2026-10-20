@@ -8,7 +8,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 @Schema(description = "Comprehensive server status information")
 public record ServerInfoDTO(
         @Schema(description = "Server name", example = "Kaillux Server") String serverName,
-        @Schema(description = "Server version", example = "1.3.0") String version,
+        @Schema(description = "Server version", example = "1.4.0") String version,
         @Schema(description = "Build number", example = "130") int build,
         @Schema(description = "Whether the server is running", example = "true") boolean running,
         @Schema(description = "UDP connection port", example = "27888") int connectPort,
