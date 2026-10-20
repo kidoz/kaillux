@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    min-height: 100vh;
+    background-color: #0f172a;
+    background-image:
+      radial-gradient(at 0% 0%, rgb(56 189 248 / 0.15) 0, transparent 50%),
+      radial-gradient(at 50% 0%, rgb(139 92 246 / 0.1) 0, transparent 50%);
+    color: #f8fafc;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  :focus-visible {
+    outline: 2px solid #38bdf8;
+    outline-offset: 3px;
+  }
+
+  button,
+  a,
+  input,
+  select {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  dialog::backdrop {
+    background: rgb(2 6 23 / 0.8);
+    backdrop-filter: blur(4px);
+  }
+}
+
+@layer components {
+  .field {
+    min-height: 2.75rem;
+    border: 1px solid rgb(255 255 255 / 0.15);
+    border-radius: 0.5rem;
+    background: #0f172a;
+    padding: 0.625rem 0.75rem;
+    color: #f8fafc;
+    font-size: 0.875rem;
+  }
+
+  .field:focus-visible {
+    border-color: #38bdf8;
+    outline: 1px solid #38bdf8;
+    outline-offset: 0;
+  }
+
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+    font-size: 0.875rem;
+  }
+
+  .data-table th {
+    border-bottom: 1px solid rgb(255 255 255 / 0.1);
+    padding: 1rem;
+    color: #94a3b8;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .data-table td {
+    border-bottom: 1px solid rgb(255 255 255 / 0.05);
+    padding: 1rem;
+  }
+
+  .data-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .data-table tbody tr:hover {
+    background: rgb(255 255 255 / 0.025);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none;
+    transition: none;
+    scroll-behavior: auto;
+  }
+}
