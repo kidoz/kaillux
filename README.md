@@ -8,6 +8,8 @@
 Kaillux is a Kaillera network server that enables online multiplayer for
 emulators by routing player input over UDP.
 
+![Kaillux admin dashboard showing server status, active users, and games](docs/images/admin-dashboard.png)
+
 ## Highlights
 
 - Modern Java 25 and Spring Boot build with virtual-thread concurrency
