@@ -6,6 +6,7 @@ import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicReference;
 
 import su.kidoz.util.EmuUtil;
+import su.kidoz.util.ThrottledLogger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,6 +16,9 @@ public abstract class PrivateUDPServer extends UDPServer {
 
     private final InetAddress remoteAddress;
     private final AtomicReference<InetSocketAddress> remoteSocketAddress = new AtomicReference<>();
+    // Anyone who can reach the port range can send here, so a rejection may not be
+    // logged once per packet.
+    private final ThrottledLogger rejectLog = new ThrottledLogger(log, "rejected non-peer packet");
 
     public PrivateUDPServer(boolean shutdownOnExit, InetAddress remoteAddress) {
         super(shutdownOnExit);
@@ -34,9 +38,9 @@ public abstract class PrivateUDPServer extends UDPServer {
         // A datagram from any other address is dropped before the source port
         // can be pinned, so a scan of the user-port range cannot take the session.
         if (remoteAddress != null && !remoteAddress.equals(inboundSocketAddress.getAddress())) {
-            log.warn("Rejecting packet from unexpected address: "
-                    + EmuUtil.formatSocketAddress(inboundSocketAddress) + " != "
-                    + remoteAddress.getHostAddress());
+            rejectLog.warn("Rejecting packet from unexpected address: {} != {}",
+                    EmuUtil.formatSocketAddress(inboundSocketAddress),
+                    remoteAddress.getHostAddress());
             return;
         }
 
@@ -45,9 +49,9 @@ public abstract class PrivateUDPServer extends UDPServer {
         remoteSocketAddress.compareAndSet(null, inboundSocketAddress);
         InetSocketAddress currentRemote = remoteSocketAddress.get();
         if (!inboundSocketAddress.equals(currentRemote)) {
-            log.warn("Rejecting packet received from wrong address: "
-                    + EmuUtil.formatSocketAddress(inboundSocketAddress) + " != "
-                    + EmuUtil.formatSocketAddress(currentRemote));
+            rejectLog.warn("Rejecting packet received from wrong address: {} != {}",
+                    EmuUtil.formatSocketAddress(inboundSocketAddress),
+                    EmuUtil.formatSocketAddress(currentRemote));
             return;
         }
 

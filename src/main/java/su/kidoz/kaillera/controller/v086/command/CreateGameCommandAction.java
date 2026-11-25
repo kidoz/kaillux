@@ -18,6 +18,7 @@ import su.kidoz.kaillera.controller.v086.protocol.QuitGame_Notification;
 import su.kidoz.kaillera.controller.v086.protocol.V086Message;
 import su.kidoz.kaillera.model.exception.CreateGameException;
 import su.kidoz.kaillera.model.exception.FloodException;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.util.EmuLang;
 
 /**
@@ -58,7 +59,7 @@ public final class CreateGameCommandAction implements V086Action {
             clientHandler.getUser().createGame(createGameMessage.getRomName());
         } catch (CreateGameException e) {
             log.info("Create Game Denied: " + clientHandler.getUser() + ": "
-                    + createGameMessage.getRomName());
+                    + InputValidator.sanitizeForLog(createGameMessage.getRomName()));
 
             try {
                 clientHandler.send(new InformationMessage(clientHandler.getNextMessageNumber(),
@@ -71,7 +72,7 @@ public final class CreateGameCommandAction implements V086Action {
             }
         } catch (FloodException e) {
             log.info("Create Game Denied: " + clientHandler.getUser() + ": "
-                    + createGameMessage.getRomName());
+                    + InputValidator.sanitizeForLog(createGameMessage.getRomName()));
 
             try {
                 clientHandler.send(new InformationMessage(clientHandler.getNextMessageNumber(),

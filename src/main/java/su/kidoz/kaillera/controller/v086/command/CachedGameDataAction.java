@@ -43,7 +43,7 @@ public final class CachedGameDataAction implements V086Action {
             int key = ((CachedGameData) message).getKey();
             byte[] data = clientHandler.getClientGameDataCache().get(key);
             if (data == null) {
-                log.error("Cached game data key {} not found in cache", key);
+                log.debug("{}: cached game data key {} is not in the cache", clientHandler, key);
                 try {
                     clientHandler.send(new GameChat_Notification(
                             clientHandler.getNextMessageNumber(), "Error",
@@ -66,8 +66,10 @@ public final class CachedGameDataAction implements V086Action {
                 }
             }
         } catch (IndexOutOfBoundsException e) {
-            log.error("Game data error!  The client cached key "
-                    + ((CachedGameData) message).getKey() + " was not found in the cache!", e);
+            // The key is the client's own choice: an unknown one is a client bug or a
+            // probe, not a server fault.
+            log.debug("{}: cached game data key {} is not in the cache", clientHandler,
+                    ((CachedGameData) message).getKey());
 
             // This may not always be the best thing to do...
             try {

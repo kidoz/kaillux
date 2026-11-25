@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
-    <!-- Console Appender -->
+    <!-- Console Appender: the only one enabled by default. -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
             <pattern>%d{MM-dd-yy HH:mm:ss.SSS} %5p %c{1}: %m%n</pattern>
         </encoder>
     </appender>
 
-    <!-- Rolling File Appender -->
+    <!-- File logging (disabled).
+         To enable it, remove the comment markers around both appenders and around
+         the ASYNC_FILE appender-ref of the root logger. An appender that is defined
+         but not referenced makes logback print its configuration status at startup. -->
+    <!--
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>kaillux.log</file>
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
@@ -21,15 +25,13 @@
         </encoder>
     </appender>
 
-    <!-- Async Appender for better performance -->
     <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
         <queueSize>512</queueSize>
         <discardingThreshold>0</discardingThreshold>
         <includeCallerData>false</includeCallerData>
         <appender-ref ref="FILE"/>
     </appender>
-
-    <!-- Granular logging control -->
+    -->
 
     <!-- Spring Framework -->
     <logger name="org.springframework" level="INFO"/>
@@ -39,21 +41,15 @@
     <!-- Hibernate/JPA (if used in future) -->
     <logger name="org.hibernate" level="WARN"/>
 
-    <!-- Kaillux specific loggers - configure as needed -->
-    <logger name="su.kidoz" level="DEBUG"/>
-    <logger name="su.kidoz.kaillera.controller" level="DEBUG"/>
-    <logger name="su.kidoz.kaillera.model" level="DEBUG"/>
+    <!-- Kaillux loggers.
+         DEBUG is verbose: it records per-packet events on the ports that anyone
+         can reach, so enable it only while diagnosing a problem, for example with
+         <logger name="su.kidoz.kaillera.controller" level="DEBUG"/> -->
     <logger name="su.kidoz.kaillera.master" level="INFO"/>
-    <logger name="su.kidoz.net" level="DEBUG"/>
-
-    <!-- Game data logging - can be very verbose, set to INFO or WARN in production -->
-    <logger name="su.kidoz.kaillera.controller.v086.action.GameDataAction" level="INFO"/>
-    <logger name="su.kidoz.kaillera.controller.v086.action.CachedGameDataAction" level="INFO"/>
 
     <!-- Root logger -->
-    <root level="DEBUG">
+    <root level="INFO">
         <appender-ref ref="CONSOLE"/>
-        <!-- Uncomment to enable file logging -->
         <!-- <appender-ref ref="ASYNC_FILE"/> -->
     </root>
 </configuration>
