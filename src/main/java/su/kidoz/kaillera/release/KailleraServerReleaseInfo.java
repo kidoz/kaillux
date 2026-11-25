@@ -8,47 +8,47 @@ import su.kidoz.util.EmuUtil;
  * also formats a welcome message for printing at server startup.
  */
 public final class KailleraServerReleaseInfo implements ReleaseInfo {
-    private final String productName = "Kaillux Kaillera Server";
+    private static final String PRODUCT_NAME = "Kaillux Kaillera Server";
 
-    private final int majorVersion = 1;
-    private final int minorVersion = 4;
-    private final int buildNumber = 0;
+    private static final int MAJOR_VERSION = 1;
+    private static final int MINOR_VERSION = 4;
+    private static final int BUILD_NUMBER = 0;
 
-    private final String releaseDate = "10/21/2026";
-    private final String licenseInfo = "Usage of this software is subject to the terms found in the included license";
-    private final String website = "https://github.com/kidoz/kaillux";
+    private static final String RELEASE_DATE = "10/21/2026";
+    private static final String LICENSE_INFO = "Usage of this software is subject to the terms found in the included license";
+    private static final String WEBSITE = "https://github.com/kidoz/kaillux";
 
     public KailleraServerReleaseInfo() {
         // generic constructor
     }
 
     public String getProductName() {
-        return productName;
+        return PRODUCT_NAME;
     }
 
     public int getMajorVersion() {
-        return majorVersion;
+        return MAJOR_VERSION;
     }
 
     public int getMinorVersion() {
-        return minorVersion;
+        return MINOR_VERSION;
     }
 
     public String getReleaseDate() {
-        return releaseDate;
+        return RELEASE_DATE;
     }
 
     public String getLicenseInfo() {
-        return licenseInfo;
+        return LICENSE_INFO;
     }
 
     public String getWebsiteString() {
-        return website;
+        return WEBSITE;
     }
 
     public int getBuildNumber() {
         // TODO: modify this to pull from an Ant build version file
-        return buildNumber;
+        return BUILD_NUMBER;
     }
 
     /**

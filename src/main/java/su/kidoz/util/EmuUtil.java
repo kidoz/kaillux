@@ -1,9 +1,6 @@
 package su.kidoz.util;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.lang.reflect.Constructor;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.ZoneId;
@@ -11,7 +8,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
-import java.util.Properties;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,27 +40,6 @@ public class EmuUtil {
         if (File.separatorChar == '\\')
             return true;
         return false;
-    }
-
-    public static Properties loadProperties(String filename) {
-        try {
-            File file = new File(filename);
-            return loadProperties(file);
-        } catch (Exception e) {
-            log.error("Failed to load properties from {}: {}", filename, e.getMessage());
-            return null;
-        }
-    }
-
-    public static Properties loadProperties(File file) {
-        Properties p = new Properties();
-        try (FileInputStream in = new FileInputStream(file)) {
-            p.load(in);
-        } catch (IOException e) {
-            log.error("Failed to load properties from {}: {}", file.getPath(), e.getMessage());
-            return null;
-        }
-        return p;
     }
 
     public static String formatBytes(byte[] data) {
@@ -248,19 +223,5 @@ public class EmuUtil {
     public static void writeString(ByteBuffer buffer, String s, int stopByte, Charset charset) {
         buffer.put(charset.encode(s));
         buffer.put((byte) stopByte);
-    }
-
-    public static Object construct(String className, Object[] args) throws InstantiationException {
-        try {
-            Class<?> c = Class.forName(className);
-            Class<?>[] contructorArgs = new Class<?>[args.length];
-            for (int i = 0; i < args.length; i++)
-                contructorArgs[i] = args[i].getClass();
-            Constructor<?> constructor = c.getConstructor(contructorArgs);
-            return constructor.newInstance(args);
-        } catch (Exception e) {
-            throw new InstantiationException(
-                    "Problem constructing new " + className + ": " + e.getMessage());
-        }
     }
 }

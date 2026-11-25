@@ -96,11 +96,11 @@ public class AutoFireScanner implements AutoFireDetector {
 
     protected class ScanningJob implements Runnable {
         private KailleraUser user;
-        private int playerNumber;
 
         private int bytesPerAction = -1;
         private int sizeLimit;
         private int bufferSize = 5;
+        // Guarded by this: filled by addData and drained by run.
         private int size = 0;
 
         private byte[][] buffer;
@@ -109,11 +109,12 @@ public class AutoFireScanner implements AutoFireDetector {
         private int pos = 0;
 
         private boolean running = false;
-        private boolean stopFlag = false;
+        private volatile boolean stopFlag = false;
 
         protected ScanningJob(KailleraUser user, int playerNumber) {
             this.user = user;
-            this.playerNumber = playerNumber;
+            // playerNumber is passed to keep the caller's signature; the job does not need
+            // it.
 
             sizeLimit = ((maxDelay + 1) * minReps * 5);
             buffer = new byte[bufferSize][sizeLimit];
@@ -162,9 +163,13 @@ public class AutoFireScanner implements AutoFireDetector {
             }
 
             try {
-                while (size > 0 && !stopFlag) {
-                    byte[] data = null;
+                while (!stopFlag) {
+                    byte[] data;
                     synchronized (this) {
+                        // size is only ever touched under the lock.
+                        if (size <= 0)
+                            break;
+
                         data = buffer[head];
                         // log.debug("Scanning " + data.length + " bytes from buffer position " +
                         // head);

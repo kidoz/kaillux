@@ -76,7 +76,7 @@ public class UnsignedUtil {
     }
 
     public static void writeUnsignedShort(int s, byte[] bytes, int offset) {
-        writeUnsignedShort(s, bytes, offset);
+        writeUnsignedShort(s, bytes, offset, false);
     }
 
     public static void writeUnsignedShort(int s, byte[] bytes, int offset, boolean littleEndian) {
@@ -94,10 +94,12 @@ public class UnsignedUtil {
     }
 
     public static long readUnsignedInt(byte[] bytes, int offset, boolean littleEndian) {
-        int i1 = bytes[offset + 0] & 0xFF;
-        int i2 = bytes[offset + 1] & 0xFF;
-        int i3 = bytes[offset + 2] & 0xFF;
-        int i4 = bytes[offset + 3] & 0xFF;
+        // The sum must be formed in 64 bits: in 32 bits the top bit would become
+        // the sign of the result.
+        long i1 = bytes[offset + 0] & 0xFF;
+        long i2 = bytes[offset + 1] & 0xFF;
+        long i3 = bytes[offset + 2] & 0xFF;
+        long i4 = bytes[offset + 3] & 0xFF;
         return (littleEndian)
                 ? (i4 << 24) + (i3 << 16) + (i2 << 8) + i1
                 : (i1 << 24) + (i2 << 16) + (i3 << 8) + i4;
