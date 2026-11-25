@@ -1,5 +1,6 @@
 package su.kidoz.kaillera.master.client;
 
+import java.net.URI;
 import java.util.List;
 
 import su.kidoz.kaillera.controller.connectcontroller.ConnectController;
@@ -37,7 +38,7 @@ public class KailleraMasterUpdateTask implements MasterListUpdateTask {
 
         StringBuilder createdGames = new StringBuilder();
         for (String game : createdGamesList) {
-            createdGames.append(game);
+            createdGames.append(headerField(game));
             createdGames.append("|");
         }
 
@@ -48,17 +49,19 @@ public class KailleraMasterUpdateTask implements MasterListUpdateTask {
 
             waitingGames.append(game.getID());
             waitingGames.append("|");
-            waitingGames.append(game.getRomName());
+            waitingGames.append(headerField(game.getRomName()));
             waitingGames.append("|");
-            waitingGames.append(game.getOwner().getName());
+            waitingGames.append(headerField(game.getOwner().getName()));
             waitingGames.append("|");
-            waitingGames.append(game.getOwner().getClientType());
+            waitingGames.append(headerField(game.getOwner().getClientType()));
             waitingGames.append("|");
             waitingGames.append(game.getNumPlayers());
             waitingGames.append("|");
         }
 
-        String uri = UriComponentsBuilder.fromUriString(KAILLERA_MASTER_URL)
+        // The values are operator configuration, not URI syntax: encode them, or an
+        // ampersand in the server name turns into extra query parameters.
+        URI uri = UriComponentsBuilder.fromUriString(KAILLERA_MASTER_URL)
                 .queryParam("servername", publicInfo.getServerName())
                 .queryParam("port", connectController.getBindPort())
                 .queryParam("nbusers", kailleraServer.getNumUsers())
@@ -66,7 +69,7 @@ public class KailleraMasterUpdateTask implements MasterListUpdateTask {
                 .queryParam("nbgames", kailleraServer.getNumGames())
                 .queryParam("location", publicInfo.getLocation())
                 .queryParam("ip", publicInfo.getConnectAddress())
-                .queryParam("url", publicInfo.getWebsite()).build().toUriString();
+                .queryParam("url", publicInfo.getWebsite()).encode().build().toUri();
 
         try {
             restClient.get().uri(uri).header("Kaillera-games", createdGames.toString())
@@ -77,5 +80,22 @@ public class KailleraMasterUpdateTask implements MasterListUpdateTask {
         } catch (Exception e) {
             log.error("Failed to touch Kaillera Master: " + e.getMessage());
         }
+    }
+
+    /**
+     * Makes a value safe inside a {@code Kaillera-games} or {@code Kaillera-wgames}
+     * header. The master splits those headers on {@code |}, so a separator or a
+     * line break in a game or user name would split or forge a record.
+     */
+    static String headerField(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            sb.append(c == '|' || c < 32 || c == 127 ? ' ' : c);
+        }
+        return sb.toString();
     }
 }
