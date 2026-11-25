@@ -35,6 +35,7 @@ const VIEWS: Record<ViewName, { title: string; description: string }> = {
   },
 };
 const REFRESH_INTERVAL_MS = 10000;
+const RETRY_NOTE = `Retrying every ${REFRESH_INTERVAL_MS / 1000} seconds, or use Refresh to try now.`;
 const CREDENTIALS_KEY = 'kaillux-admin-basic';
 type SessionState = 'checking' | 'authenticated' | 'anonymous';
 
@@ -100,11 +101,15 @@ export default function App() {
       abortRef.current = controller;
       setRefreshing(true);
       try {
+        // Every request makes the server check the password, which is expensive, so
+        // only the data that the current view shows is fetched.
         const [info, nextUsers, nextGames, nextControllers] = await Promise.all([
           fetchServerInfo(authHeader, controller.signal),
-          fetchUsers(authHeader, controller.signal),
-          fetchGames(authHeader, controller.signal),
-          fetchControllers(authHeader, controller.signal),
+          view === 'users' ? fetchUsers(authHeader, controller.signal) : Promise.resolve(null),
+          view === 'games' ? fetchGames(authHeader, controller.signal) : Promise.resolve(null),
+          view === 'controllers'
+            ? fetchControllers(authHeader, controller.signal)
+            : Promise.resolve(null),
         ]);
         if (controller.signal.aborted) return;
         if (info) setServerInfo(info);
@@ -113,20 +118,20 @@ export default function App() {
         if (nextControllers) setControllers(nextControllers);
         const failed = [
           !info && 'server status',
-          !nextUsers && 'users',
-          !nextGames && 'games',
-          !nextControllers && 'controllers',
+          view === 'users' && !nextUsers && 'users',
+          view === 'games' && !nextGames && 'games',
+          view === 'controllers' && !nextControllers && 'controllers',
         ].filter(Boolean);
         setLoadError(
           failed.length
-            ? `Could not refresh ${failed.join(', ')}. Previously loaded data may be out of date. Retrying every 10 seconds, or use Refresh to try now.`
+            ? `Could not refresh ${failed.join(', ')}. Previously loaded data may be out of date. ${RETRY_NOTE}`
             : null
         );
         if (!failed.length) setLastUpdated(new Date());
       } catch (error) {
         if (controller.signal.aborted) return;
         if (error instanceof AuthError) signOut('Your session has expired. Please sign in again.');
-        else setLoadError('Unable to refresh server data. Retrying every 10 seconds.');
+        else setLoadError(`Unable to refresh server data. ${RETRY_NOTE}`);
       } finally {
         if (abortRef.current === controller) {
           abortRef.current = null;
@@ -134,7 +139,7 @@ export default function App() {
         }
       }
     },
-    [authHeader, signOut]
+    [authHeader, signOut, view]
   );
 
   useEffect(() => {
@@ -168,7 +173,11 @@ export default function App() {
         const info = await fetchServerInfo(stored, controller.signal);
         if (controller.signal.aborted) return;
         if (!info) {
-          signOut('Unable to reach the server. Please try again.');
+          // The server answered but not usefully. Keep the session and report the
+          // problem; the next refresh shows whether the credentials still work.
+          setAuthHeader(stored);
+          setSession('authenticated');
+          setLoadError(`Unable to load server data. ${RETRY_NOTE}`);
           return;
         }
         setAuthHeader(stored);
@@ -176,11 +185,15 @@ export default function App() {
         setSession('authenticated');
       } catch (error) {
         if (controller.signal.aborted) return;
-        signOut(
-          error instanceof AuthError
-            ? 'Your session has expired. Please sign in again.'
-            : 'Unable to reach the server. Please try again.'
-        );
+        if (error instanceof AuthError) {
+          // Only a rejected credential ends the session. A server that cannot be
+          // reached, or answers with unexpected data, must not discard it.
+          signOut('Your session has expired. Please sign in again.');
+          return;
+        }
+        setAuthHeader(stored);
+        setSession('authenticated');
+        setLoadError(`Unable to reach the server. ${RETRY_NOTE}`);
       }
     })();
     return () => controller.abort();
@@ -188,10 +201,30 @@ export default function App() {
 
   useEffect(() => {
     if (session !== 'authenticated' || !authHeader) return;
+    // A hidden tab polls nothing: each poll costs the server a password check, and
+    // nobody is looking at the result.
+    let intervalId: number | null = null;
+    const start = () => {
+      intervalId ??= window.setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
+    };
+    const stop = () => {
+      if (intervalId !== null) window.clearInterval(intervalId);
+      intervalId = null;
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') stop();
+      else {
+        void refresh();
+        start();
+      }
+    };
     void refresh();
-    const intervalId = window.setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
+    if (document.visibilityState === 'hidden') stop();
+    else start();
+    document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
-      window.clearInterval(intervalId);
+      stop();
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       abortRef.current?.abort();
       abortRef.current = null;
     };
@@ -360,13 +393,13 @@ export default function App() {
                   detail="Total since server start"
                 />
                 <StatCard
-                  label="Thread pool"
-                  value={
+                  label="Virtual threads"
+                  value={serverInfo ? String(serverInfo.threadPool.active) : '—'}
+                  detail={
                     serverInfo
-                      ? `${serverInfo.threadPool.active} / ${serverInfo.threadPool.poolSize}`
-                      : '—'
+                      ? `${serverInfo.threadPool.taskCount.toLocaleString()} tasks started since server start`
+                      : undefined
                   }
-                  detail="Active threads / pool size"
                 />
               </section>
               {serverInfo && (

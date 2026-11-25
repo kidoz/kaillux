@@ -115,7 +115,8 @@ export default function TablePanel({
         <section
           className="overflow-x-auto rounded-lg focus-visible:outline-sky-400"
           aria-label={`${noun} table, scroll horizontally for more columns`}
-          // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users need to scroll wide tables.
+          // tabIndex makes the scroll container focusable, so keyboard users can
+          // scroll a table that is wider than the page.
           tabIndex={0}
         >
           {children}

@@ -31,9 +31,8 @@ export const ServerInfoSchema = z.object({
   threadPool: ThreadPoolSchema,
 });
 
-export const UserStatusSchema = z.enum(['CONNECTING', 'IDLE', 'PLAYING']);
-export const ConnectionTypeSchema = z.enum(['LAN', 'EXCELLENT', 'GOOD', 'AVERAGE', 'LOW', 'BAD']);
-export const GameStatusSchema = z.enum(['WAITING', 'PLAYING', 'SYNCHRONIZING']);
+// The server reports status and connection types as display strings such as
+// "Idle" and "Lan", so those fields are plain strings rather than enums.
 
 export const UserSchema = z.object({
   id: z.number(),
