@@ -18,8 +18,10 @@ import su.kidoz.kaillera.controller.connectcontroller.protocol.ConnectMessage_HE
 import su.kidoz.kaillera.controller.connectcontroller.protocol.ConnectMessage_HELLOD00D;
 import su.kidoz.kaillera.controller.connectcontroller.protocol.ConnectMessage_TOO;
 import su.kidoz.kaillera.controller.messaging.MessageFormatException;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.net.UDPRelay;
 import su.kidoz.util.EmuUtil;
+import su.kidoz.util.ThrottledLogger;
 
 /**
  * Spring-managed Kaillera connection relay controller.
@@ -44,6 +46,10 @@ import su.kidoz.util.EmuUtil;
 public class KailleraRelayController extends UDPRelay {
 
     private static final Logger log = LoggerFactory.getLogger(KailleraRelayController.class);
+    // Anyone can send to the relay port, so these may not be written once per
+    // packet.
+    private static final ThrottledLogger REJECTED_PACKET_LOG = new ThrottledLogger(log,
+            "rejected relay packet");
 
     private final ExecutorService threadPool;
     private final ScheduledExecutorService scheduler;
@@ -65,9 +71,30 @@ public class KailleraRelayController extends UDPRelay {
      */
     public KailleraRelayController(ExecutorService threadPool, ScheduledExecutorService scheduler,
             RelayConfig config) {
+        this(threadPool, scheduler, config, UDPRelay.SINGLE_PACKET_IDLE_TIMEOUT_MS,
+                UDPRelay.DEFAULT_CLIENT_IDLE_TIMEOUT_MS);
+    }
+
+    /**
+     * Creates a Kaillera relay controller with explicit client-flow idle timeouts.
+     *
+     * @param threadPool
+     *            the executor service for handling connections
+     * @param scheduler
+     *            the scheduler for periodic cleanup tasks
+     * @param config
+     *            the relay configuration
+     * @param singlePacketIdleTimeoutMs
+     *            idle timeout for a flow whose client sent one datagram
+     * @param clientIdleTimeoutMs
+     *            idle timeout for every other flow
+     */
+    KailleraRelayController(ExecutorService threadPool, ScheduledExecutorService scheduler,
+            RelayConfig config, long singlePacketIdleTimeoutMs, long clientIdleTimeoutMs) {
         super(threadPool, config.getListenPort(),
                 new InetSocketAddress(config.getBackendHost(), config.getBackendPort()),
-                config.getMaxConnections(), config.getBufferSize());
+                config.getMaxConnections(), config.getBufferSize(), singlePacketIdleTimeoutMs,
+                clientIdleTimeoutMs);
         this.threadPool = threadPool;
         this.scheduler = scheduler;
         this.config = config;
@@ -161,20 +188,20 @@ public class KailleraRelayController extends UDPRelay {
         try {
             inMessage = ConnectMessage.parse(receiveBuffer);
         } catch (MessageFormatException e) {
-            log.warn("Unrecognized message format from {}",
-                    EmuUtil.formatSocketAddress(fromAddress), e);
             incrementParseErrors();
+            REJECTED_PACKET_LOG.warn("Unrecognized message format from {}: {}",
+                    EmuUtil.formatSocketAddress(fromAddress), e.toString());
             return null;
         }
 
-        log.debug("{} -> {}: {}", EmuUtil.formatSocketAddress(fromAddress),
-                EmuUtil.formatSocketAddress(toAddress), inMessage);
-
         if (inMessage instanceof ConnectMessage_HELLO clientTypeMessage) {
-            log.info("Client {} version: {}", EmuUtil.formatSocketAddress(fromAddress),
-                    clientTypeMessage.getProtocol());
+            // The protocol string is client-chosen and unvalidated.
+            log.debug("Client {} sent HELLO for protocol {}",
+                    EmuUtil.formatSocketAddress(fromAddress),
+                    InputValidator.sanitizeForLog(clientTypeMessage.getProtocol()));
         } else {
-            log.warn("Client {} sent unexpected message: {}",
+            // Only the server sends the other message types.
+            REJECTED_PACKET_LOG.warn("Client {} sent unexpected message: {}",
                     EmuUtil.formatSocketAddress(fromAddress), inMessage);
             return null;
         }
@@ -195,13 +222,10 @@ public class KailleraRelayController extends UDPRelay {
         try {
             inMessage = ConnectMessage.parse(receiveBuffer);
         } catch (MessageFormatException e) {
-            log.warn("Unrecognized message format from backend", e);
             incrementParseErrors();
+            REJECTED_PACKET_LOG.warn("Unrecognized message format from backend: {}", e.toString());
             return null;
         }
-
-        log.debug("{} -> {}: {}", EmuUtil.formatSocketAddress(fromAddress),
-                EmuUtil.formatSocketAddress(toAddress), inMessage);
 
         if (inMessage instanceof ConnectMessage_HELLOD00D portMsg) {
             int assignedPort = portMsg.getPort();

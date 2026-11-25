@@ -1,5 +1,6 @@
 package su.kidoz.net;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
@@ -19,6 +20,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 import su.kidoz.util.EmuUtil;
+import su.kidoz.util.ThrottledLogger;
 
 /**
  * Abstract UDP packet relay that acts as a transparent proxy between clients
@@ -42,9 +44,6 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
     private static final int DEFAULT_MAX_CONNECTIONS = 100;
     private static final int DEFAULT_BUFFER_SIZE = 2048;
 
-    /** Idle timeout after which a client handler is closed and removed. */
-    private static final long CLIENT_IDLE_TIMEOUT_MS = 300_000L;
-
     /** Selector timeout and interval between idle-client checks. */
     private static final long IDLE_CHECK_INTERVAL_MS = 1000L;
 
@@ -54,11 +53,41 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
      */
     private static final int MAX_PACKETS_PER_ITERATION = 256;
 
+    /**
+     * Idle timeout after which an established client handler is closed and removed.
+     */
+    public static final long DEFAULT_CLIENT_IDLE_TIMEOUT_MS = 300_000L;
+
+    /**
+     * Idle timeout for a flow whose client has sent a single datagram. A real
+     * client follows its first packet as soon as the backend answers; a spoofed or
+     * abandoned source never does, so its state must not be held for the full idle
+     * period.
+     */
+    public static final long SINGLE_PACKET_IDLE_TIMEOUT_MS = 15_000L;
+
+    /** Fewest flows one source address may hold. */
+    private static final int MIN_CONNECTIONS_PER_ADDRESS = 4;
+
+    // Any host can open flows or send junk to a relay, so these may not be written
+    // once per packet.
+    private static final ThrottledLogger LIMIT_LOG = new ThrottledLogger(log,
+            "relay connection limit");
+    private static final ThrottledLogger PACKET_FAILURE_LOG = new ThrottledLogger(log,
+            "failed relay packet");
+    private static final ThrottledLogger HANDLER_START_LOG = new ThrottledLogger(log,
+            "failed to start a relay client handler");
+
     private final ExecutorService threadPool;
     private final int listenPort;
     private final InetSocketAddress serverSocketAddress;
     private final int maxConnections;
     private final int bufferSize;
+
+    /** Flows one source address may hold at the same time. */
+    private final int maxConnectionsPerAddress;
+    private final long singlePacketIdleTimeoutMs;
+    private final long clientIdleTimeoutMs;
 
     private DatagramChannel listenChannel;
     private volatile Selector selector;
@@ -107,11 +136,40 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
      */
     public UDPRelay(ExecutorService threadPool, int listenPort,
             InetSocketAddress serverSocketAddress, int maxConnections, int bufferSize) {
+        this(threadPool, listenPort, serverSocketAddress, maxConnections, bufferSize,
+                SINGLE_PACKET_IDLE_TIMEOUT_MS, DEFAULT_CLIENT_IDLE_TIMEOUT_MS);
+    }
+
+    /**
+     * Creates a new UDP relay with explicit idle timeouts.
+     *
+     * @param threadPool
+     *            the executor service for handling client connections
+     * @param listenPort
+     *            the port to listen on for incoming connections
+     * @param serverSocketAddress
+     *            the backend server address to relay traffic to
+     * @param maxConnections
+     *            maximum concurrent connections
+     * @param bufferSize
+     *            buffer size for UDP packets
+     * @param singlePacketIdleTimeoutMs
+     *            idle timeout for a flow whose client sent one datagram
+     * @param clientIdleTimeoutMs
+     *            idle timeout for every other flow
+     */
+    protected UDPRelay(ExecutorService threadPool, int listenPort,
+            InetSocketAddress serverSocketAddress, int maxConnections, int bufferSize,
+            long singlePacketIdleTimeoutMs, long clientIdleTimeoutMs) {
         this.threadPool = threadPool;
         this.listenPort = listenPort;
         this.serverSocketAddress = serverSocketAddress;
         this.maxConnections = maxConnections;
         this.bufferSize = bufferSize;
+        // A fifth of the table, so that a handful of addresses cannot fill it.
+        this.maxConnectionsPerAddress = Math.max(MIN_CONNECTIONS_PER_ADDRESS, maxConnections / 5);
+        this.singlePacketIdleTimeoutMs = singlePacketIdleTimeoutMs;
+        this.clientIdleTimeoutMs = clientIdleTimeoutMs;
     }
 
     /**
@@ -374,41 +432,84 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
     }
 
     private void handleClientPacket(InetSocketAddress clientAddress, ByteBuffer buffer) {
-        ClientHandler clientHandler = clients.get(clientAddress);
-        if (clientHandler == null) {
-            if (clients.size() >= maxConnections) {
-                log.warn("Connection limit reached ({}), rejecting client {}", maxConnections,
-                        EmuUtil.formatSocketAddress(clientAddress));
-                return;
-            }
-
-            try {
-                clientHandler = new ClientHandler(clientAddress);
-            } catch (Exception e) {
-                log.error("Failed to start new ClientHandler for {}",
-                        EmuUtil.formatSocketAddress(clientAddress), e);
-                return;
-            }
-
-            clients.put(clientAddress, clientHandler);
-            totalConnections.incrementAndGet();
-            threadPool.execute(clientHandler);
-        }
-
         buffer.flip();
-        try {
-            clientHandler.send(buffer);
-        } catch (Exception e) {
-            // One malformed packet must not stop the relay listener.
-            incrementParseErrors();
-            log.warn("Failed to process packet from {}: {}",
-                    EmuUtil.formatSocketAddress(clientAddress), e.getMessage(), e);
+        ClientHandler clientHandler = clients.get(clientAddress);
+        if (clientHandler != null) {
+            try {
+                clientHandler.send(buffer);
+            } catch (Exception e) {
+                logPacketFailure(clientAddress, e);
+            }
+            return;
         }
+
+        if (clients.size() >= maxConnections) {
+            LIMIT_LOG.warn("Connection limit reached ({}), rejecting client {}", maxConnections,
+                    EmuUtil.formatSocketAddress(clientAddress));
+            return;
+        }
+
+        if (countClientsFrom(clientAddress.getAddress()) >= maxConnectionsPerAddress) {
+            LIMIT_LOG.warn("Per-address connection limit reached ({}), rejecting client {}",
+                    maxConnectionsPerAddress, EmuUtil.formatSocketAddress(clientAddress));
+            return;
+        }
+
+        // Nothing is allocated until the datagram has been examined. Any host can send
+        // one datagram from any number of source ports, and a socket and thread for
+        // each would fill the table in moments.
+        ByteBuffer firstPacket;
+        try {
+            firstPacket = processClientToServer(buffer, clientAddress, serverSocketAddress);
+        } catch (Exception e) {
+            logPacketFailure(clientAddress, e);
+            return;
+        }
+        if (firstPacket == null) {
+            return;
+        }
+
+        try {
+            clientHandler = new ClientHandler(clientAddress);
+        } catch (Exception e) {
+            HANDLER_START_LOG.error("Failed to start new ClientHandler for {}",
+                    EmuUtil.formatSocketAddress(clientAddress), e);
+            return;
+        }
+
+        clients.put(clientAddress, clientHandler);
+        totalConnections.incrementAndGet();
+        try {
+            clientHandler.forward(firstPacket);
+        } catch (Exception e) {
+            logPacketFailure(clientAddress, e);
+        }
+        threadPool.execute(clientHandler);
+    }
+
+    private int countClientsFrom(InetAddress address) {
+        int count = 0;
+        synchronized (clients) {
+            for (InetSocketAddress clientAddress : clients.keySet()) {
+                if (clientAddress.getAddress().equals(address)) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
+
+    private void logPacketFailure(InetSocketAddress clientAddress, Exception e) {
+        // One malformed packet must not stop the relay listener, and many must not
+        // fill the log either.
+        incrementParseErrors();
+        PACKET_FAILURE_LOG.error("Failed to process packet from {}: {}",
+                EmuUtil.formatSocketAddress(clientAddress), e.toString(), e);
     }
 
     /**
      * Closes client handlers that have seen no traffic in either direction for
-     * longer than the idle timeout.
+     * longer than their idle timeout.
      */
     private void evictIdleClients() {
         long now = System.currentTimeMillis();
@@ -419,8 +520,8 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
         }
 
         for (ClientHandler handler : handlers) {
-            if (handler.isIdle(now, CLIENT_IDLE_TIMEOUT_MS)) {
-                log.info("Closing idle relay client {}",
+            if (handler.isIdle(now, singlePacketIdleTimeoutMs, clientIdleTimeoutMs)) {
+                log.debug("Closing idle relay client {}",
                         EmuUtil.formatSocketAddress(handler.getClientSocketAddress()));
                 handler.close();
             }
@@ -436,6 +537,7 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
         private final DatagramChannel clientChannel;
         private final long connectTime;
         private volatile long lastActivity;
+        private final AtomicInteger packetsFromClient = new AtomicInteger();
         private volatile boolean closed = false;
 
         protected ClientHandler(InetSocketAddress clientSocketAddress) throws Exception {
@@ -444,7 +546,7 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
             this.lastActivity = this.connectTime;
             clientChannel = DatagramChannel.open();
             clientChannel.socket().bind(null);
-            log.info("ClientHandler for {} bound to port {}",
+            log.debug("ClientHandler for {} bound to port {}",
                     EmuUtil.formatSocketAddress(clientSocketAddress),
                     clientChannel.socket().getPort());
         }
@@ -471,10 +573,21 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
         }
 
         /**
-         * Returns true if this handler has seen no traffic for the given timeout.
+         * Returns true if this handler has seen no traffic for its timeout. A flow
+         * whose client sent one datagram uses the shorter timeout: a spoofed or
+         * abandoned source never sends a second one.
+         *
+         * @param now
+         *            the current time in milliseconds
+         * @param singlePacketTimeoutMs
+         *            timeout for a flow with one datagram from its client
+         * @param timeoutMs
+         *            timeout for every other flow
+         * @return true if the flow has been idle for longer than its timeout
          */
-        protected boolean isIdle(long now, long timeoutMs) {
-            return (now - lastActivity) > timeoutMs;
+        protected boolean isIdle(long now, long singlePacketTimeoutMs, long timeoutMs) {
+            long timeout = packetsFromClient.get() <= 1 ? singlePacketTimeoutMs : timeoutMs;
+            return (now - lastActivity) > timeout;
         }
 
         private void touch() {
@@ -484,16 +597,34 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
         }
 
         /**
-         * Sends a packet from client to server.
+         * Examines a packet from the client and relays it when it is accepted.
+         *
+         * @param buffer
+         *            the received packet
+         * @throws Exception
+         *             if the packet cannot be processed or sent
          */
         protected void send(ByteBuffer buffer) throws Exception {
             ByteBuffer newBuffer = processClientToServer(buffer, clientSocketAddress,
                     serverSocketAddress);
             if (newBuffer != null) {
-                int bytes = clientChannel.send(newBuffer, serverSocketAddress);
-                bytesRelayed.addAndGet(bytes);
-                touch();
+                forward(newBuffer);
             }
+        }
+
+        /**
+         * Relays a packet that {@link #processClientToServer} already accepted.
+         *
+         * @param newBuffer
+         *            the packet to relay
+         * @throws Exception
+         *             if the packet cannot be sent
+         */
+        protected void forward(ByteBuffer newBuffer) throws Exception {
+            int bytes = clientChannel.send(newBuffer, serverSocketAddress);
+            bytesRelayed.addAndGet(bytes);
+            packetsFromClient.incrementAndGet();
+            touch();
         }
 
         /**
@@ -510,7 +641,7 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
 
         @Override
         public void run() {
-            log.info("ClientHandler thread for {} running...",
+            log.debug("ClientHandler thread for {} running...",
                     EmuUtil.formatSocketAddress(clientSocketAddress));
 
             try {
@@ -562,7 +693,7 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
                 clients.remove(clientSocketAddress);
             }
 
-            log.info("ClientHandler thread for {} exiting...",
+            log.debug("ClientHandler thread for {} exiting...",
                     EmuUtil.formatSocketAddress(clientSocketAddress));
         }
     }

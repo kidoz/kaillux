@@ -125,6 +125,176 @@ class RelayIntegrationTest {
         }
     }
 
+    /** A datagram that carries one ClientACK message. */
+    private static byte[] clientAckBundle() {
+        ByteBuffer buffer = ByteBuffer.allocate(24);
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put((byte) 1); // one message
+        buffer.putShort((short) 1); // message number
+        buffer.putShort((short) 18); // message length
+        buffer.put((byte) 0x06); // ClientACK
+        buffer.put((byte) 0x00);
+        buffer.putInt(0);
+        buffer.putInt(1);
+        buffer.putInt(2);
+        buffer.putInt(3);
+
+        byte[] bytes = new byte[buffer.position()];
+        buffer.flip();
+        buffer.get(bytes);
+        return bytes;
+    }
+
+    /** A UDP port that was free a moment ago. */
+    private static int freeUdpPort() throws Exception {
+        try (DatagramSocket socket = new DatagramSocket(0)) {
+            return socket.getLocalPort();
+        }
+    }
+
+    @Nested
+    @DisplayName("Relay flow table")
+    class RelayFlowTable {
+
+        private static final long NEVER_MILLIS = 600_000;
+
+        private void send(int port, byte[] datagram) throws Exception {
+            try (DatagramSocket client = new DatagramSocket()) {
+                client.send(new DatagramPacket(datagram, datagram.length,
+                        InetAddress.getLoopbackAddress(), port));
+            }
+        }
+
+        /** Waits until the relay reports the expected number of flows. */
+        private static void awaitFlows(V086RelayController relay, int expected)
+                throws InterruptedException {
+            long deadline = System.currentTimeMillis() + 3000;
+            while (relay.getActiveConnections() != expected
+                    && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20);
+            }
+            assertEquals(expected, relay.getActiveConnections());
+        }
+
+        @Test
+        @DisplayName("a rejected datagram does not create a flow")
+        void aRejectedDatagramDoesNotCreateAFlow() throws Exception {
+            try (DatagramSocket backend = new DatagramSocket(0, InetAddress.getLoopbackAddress())) {
+                V086RelayController relay = new V086RelayController(threadPool, freeUdpPort(),
+                        new java.net.InetSocketAddress(TEST_BACKEND_HOST, backend.getLocalPort()),
+                        config.getMaxConnections(), config.getBufferSize(), NEVER_MILLIS,
+                        NEVER_MILLIS);
+                relay.start();
+                try {
+                    // Any host can send junk; state for each datagram would fill the
+                    // table at once, so nothing may be allocated for it.
+                    byte[] junk = {0x02, 0x07, 0x00, 0x04, 0x00, 0x63, 0x01, 0x02};
+                    for (int i = 0; i < 20; i++) {
+                        send(relay.getListenPort(), junk);
+                    }
+                    Thread.sleep(200);
+
+                    assertEquals(0, relay.getActiveConnections());
+                    assertEquals(0, relay.getTotalConnections());
+
+                    byte[] bundle = clientAckBundle();
+                    send(relay.getListenPort(), bundle);
+                    backend.setSoTimeout(2000);
+                    DatagramPacket received = new DatagramPacket(new byte[2048], 2048);
+                    backend.receive(received);
+
+                    assertEquals(bundle.length, received.getLength());
+                    assertEquals(1, relay.getTotalConnections());
+                } finally {
+                    relay.stop();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("one address cannot take more than its share of the flows")
+        void oneAddressCannotTakeMoreThanItsShareOfTheFlows() throws Exception {
+            try (DatagramSocket backend = new DatagramSocket(0, InetAddress.getLoopbackAddress())) {
+                // maxConnections 5 gives one address at most 4 flows.
+                V086RelayController relay = new V086RelayController(threadPool, freeUdpPort(),
+                        new java.net.InetSocketAddress(TEST_BACKEND_HOST, backend.getLocalPort()),
+                        5, config.getBufferSize(), NEVER_MILLIS, NEVER_MILLIS);
+                relay.start();
+                try {
+                    byte[] bundle = clientAckBundle();
+                    // Every datagram comes from a different source port of the same host.
+                    for (int i = 0; i < 8; i++) {
+                        send(relay.getListenPort(), bundle);
+                    }
+                    awaitFlows(relay, 4);
+                    Thread.sleep(200);
+
+                    assertEquals(4, relay.getTotalConnections(),
+                            "the fifth and later flows from one address must be refused");
+                } finally {
+                    relay.stop();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("a flow whose client sent one datagram expires quickly, others do not")
+        void aSingleDatagramFlowExpiresQuickly() throws Exception {
+            try (DatagramSocket backend = new DatagramSocket(0, InetAddress.getLoopbackAddress())) {
+                V086RelayController relay = new V086RelayController(threadPool, freeUdpPort(),
+                        new java.net.InetSocketAddress(TEST_BACKEND_HOST, backend.getLocalPort()),
+                        config.getMaxConnections(), config.getBufferSize(), 50, NEVER_MILLIS);
+                relay.start();
+                try {
+                    // One flow that stays at a single datagram, as a spoofed source does.
+                    send(relay.getListenPort(), clientAckBundle());
+                    awaitFlows(relay, 1);
+
+                    // The idle check runs once a second.
+                    Thread.sleep(1500);
+                    assertEquals(0, relay.getActiveConnections(),
+                            "a flow that never got a second datagram must be dropped early");
+
+                    // Two datagrams from the same client socket make a flow that a
+                    // real client is driving.
+                    try (DatagramSocket client = new DatagramSocket()) {
+                        byte[] bundle = clientAckBundle();
+                        client.send(new DatagramPacket(bundle, bundle.length,
+                                InetAddress.getLoopbackAddress(), relay.getListenPort()));
+                        awaitFlows(relay, 1);
+                        client.send(new DatagramPacket(bundle, bundle.length,
+                                InetAddress.getLoopbackAddress(), relay.getListenPort()));
+                    }
+                    Thread.sleep(1500);
+                    assertEquals(1, relay.getActiveConnections(),
+                            "an established flow must not be dropped by the short timeout");
+                } finally {
+                    relay.stop();
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("the connect relay allocates a flow only for a HELLO")
+        void theConnectRelayAllocatesAFlowOnlyForAHello() throws Exception {
+            when(config.getListenPort()).thenReturn(freeUdpPort());
+            relayController = new KailleraRelayController(threadPool, scheduler, config,
+                    NEVER_MILLIS, NEVER_MILLIS);
+            relayController.start();
+            int port = relayController.getListenPort();
+
+            send(port, "PING\0".getBytes(CHARSET));
+            send(port, "junk\0".getBytes(CHARSET));
+            Thread.sleep(200);
+            assertEquals(0, relayController.getTotalConnections(),
+                    "anything but a HELLO is dropped without allocating state");
+
+            send(port, "HELLO0.83\0".getBytes(CHARSET));
+            Thread.sleep(200);
+            assertEquals(1, relayController.getTotalConnections());
+        }
+    }
+
     @Nested
     @DisplayName("V086 Relay Controller")
     class V086RelayControllerTests {
@@ -179,31 +349,6 @@ class RelayIntegrationTest {
                 } finally {
                     v086Relay.stop();
                 }
-            }
-        }
-
-        private byte[] clientAckBundle() {
-            ByteBuffer buffer = ByteBuffer.allocate(24);
-            buffer.order(ByteOrder.LITTLE_ENDIAN);
-            buffer.put((byte) 1); // one message
-            buffer.putShort((short) 1); // message number
-            buffer.putShort((short) 18); // message length
-            buffer.put((byte) 0x06); // ClientACK
-            buffer.put((byte) 0x00);
-            buffer.putInt(0);
-            buffer.putInt(1);
-            buffer.putInt(2);
-            buffer.putInt(3);
-
-            byte[] bytes = new byte[buffer.position()];
-            buffer.flip();
-            buffer.get(bytes);
-            return bytes;
-        }
-
-        private int freeUdpPort() throws Exception {
-            try (DatagramSocket socket = new DatagramSocket(0)) {
-                return socket.getLocalPort();
             }
         }
     }
