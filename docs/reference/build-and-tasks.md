@@ -20,13 +20,13 @@ commands, including the admin UI build.
 | `./gradlew verifyAdminUi` | Check that `src/main/resources/static/admin/dist/` exists. |
 | `./gradlew clean` | Delete `build/`. |
 | `./gradlew test` | Run tests. Load-tagged tests are excluded by default. |
-| `./gradlew check` | Run the full verification lifecycle. |
+| `./gradlew check` | Run the full verification lifecycle, including the coverage threshold. |
 | `./gradlew spotlessCheck` | Verify Java formatting. |
 | `./gradlew spotlessApply` | Apply Java formatting. |
 | `./gradlew checkstyleMain` | Run Checkstyle on main sources. |
 | `./gradlew spotbugsMain` | Run SpotBugs on main sources. |
 | `./gradlew jacocoTestReport` | Generate the coverage report. |
-| `./gradlew jacocoTestCoverageVerification` | Enforce the configured coverage threshold. |
+| `./gradlew jacocoTestCoverageVerification` | Enforce the configured coverage threshold. Also run by `check`. |
 
 The compiler uses `-Werror`, `-Xlint:deprecation`, and `-Xlint:unchecked`, so
 warnings fail the build. The executable jar is written to `build/kaillux.jar`.

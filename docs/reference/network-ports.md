@@ -74,13 +74,15 @@ as UDP or the Kaillera ports as TCP.
 The bundled `docker-run` recipe maps:
 
 ```bash
--p 8080:8080
+-p 127.0.0.1:8080:8080
 -p 27888:27888/udp
 -p 27889-27924:27889-27924/udp
 ```
 
-`compose.yaml` binds the HTTP port to `127.0.0.1:8080`. If you change the user
-limit, update the published UDP range to match the formula above.
+Both the recipe and `compose.yaml` bind the HTTP port to `127.0.0.1:8080`. The
+dashboard sends its password in every request, over plain HTTP, so publish the
+port on other interfaces only behind a TLS proxy. If you change the user limit,
+update the published UDP range to match the formula above.
 
 Relay mode additionally publishes `27887:27887/udp` and must publish the
 backend's data-port range.

@@ -46,8 +46,18 @@ The client now sends protocol messages to the assigned data port. The first is
 `UserInformation` (`0x03`), containing the user name, emulator name, and
 connection type.
 
+Until the login completes, `V086ClientHandler` passes only three messages to
+the command actions: `UserInformation`, `ClientACK` (`0x06`), and `Quit`
+(`0x01`). Every other command is dropped without effect and without a reply.
+The command actions assume a logged-in user; before the gate, a `PlayerDrop`
+sent at this stage moved the session out of `CONNECTING`, so that its own login
+was then refused.
+
 `LoginCommandAction` stores those values, records the client's address, and
-starts the speed test. The speed test is a short burst of server ACKs
+starts the speed test. It does so once: once the user is logged in, a later
+`UserInformation` is ignored, because applying it again would replace the name
+without the checks that the login makes. The speed test is a short burst of
+server ACKs
 (`0x05`) and client ACKs (`0x06`); the client's ping is derived from the
 round-trip times. After more than three client ACKs, the server records the
 best round-trip time as the user's ping and calls `KailleraServerImpl.login`.
@@ -93,8 +103,10 @@ alive. The server enforces:
 A keepalive (`0x09`) updates the user's last-keepalive timestamp. The
 maintenance task disconnects a logged-in user after
 `server.keep-alive-timeout` seconds without one, and an idle normal user after
-`server.idle-timeout` seconds without activity. A user who has not completed
-login is removed after `max-ping * 15` milliseconds.
+`server.idle-timeout` seconds without activity. A session that has not
+completed login is removed by two earlier timeouts: `max(1500, max-ping * 6)`
+milliseconds for a HELLO that was never followed by a `UserInformation`, and
+`max-ping * 15` milliseconds for a login that started but did not finish.
 
 ## 4. Game room
 

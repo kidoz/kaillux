@@ -109,9 +109,13 @@ Key messages to watch:
 - `Failed to touch ... master list` — outbound HTTP problem.
 - `player desynched` / `game desynched` — input timing problems.
 
-Raise logging for a package only when needed; game data logging at debug level
-is very verbose. The default configuration already logs `su.kidoz` at DEBUG and
-silences the high-volume game data actions.
+Raise logging for a package only when needed. The default configuration logs
+at INFO. DEBUG is verbose, because it records per-packet events on the ports
+that anyone can reach, so enable it for one package only while diagnosing a
+problem. Warnings that untrusted input can trigger, such as rejected packets
+and refused handshakes, are limited to a few lines per minute; a line of the
+form `... further events suppressed in the last window` reports how many were
+left out.
 
 ## A baseline alert set
 

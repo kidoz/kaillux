@@ -37,7 +37,7 @@ cp src/main/resources/access.cfg ./access.cfg
 
 The file path is resolved once at startup. If the server was already running
 with the packaged copy, restart it once after creating the working-directory
-file. After that, edits to the file are hot-reloaded.
+file. After that, edits to the file are picked up within about a second.
 
 ## Understand rule order
 
@@ -73,11 +73,11 @@ user,<NORMAL|ELEVATED|ADMIN>,<address patterns>[,<login announcement>]
 Examples:
 
 ```text
-# The machine running the server.
-user,ADMIN,dns:localhost,Server owner logged in
+# A fixed address you administer the server from.
+user,ADMIN,192.0.2.10,Server owner logged in
 
 # A LAN and a fixed public address.
-user,ADMIN,192.168.*|10.0.0.*|127.0.0.1,Local admin
+user,ADMIN,192.168.*|10.0.0.*,Local admin
 user,ELEVATED,198.51.100.20,
 
 # A normal user who should see a greeting.
@@ -112,7 +112,9 @@ ipaddress,ALLOW,*
 ```
 
 Address patterns are matched against the textual IP address, not CIDR. `*`
-matches any run of characters, and `|` separates alternatives. DNS names are
+matches any run of characters, and `|` separates alternatives. IPv6 addresses
+are compared uncompressed; a complete IPv6 address in a pattern is normalized
+for you, but a pattern that combines `::` with `*` is not. DNS names are
 supported with the `dns:` prefix and are re-resolved every 60 seconds:
 
 ```text
@@ -149,9 +151,15 @@ same as for addresses, but there is no `dns:` handling.
 
 ## Apply changes
 
-Save the file. The maintenance thread checks its modification time every 60
-seconds, and many access checks also trigger a reload immediately. A connection
-made right after saving normally sees the new rules without a restart.
+Do not grant `ADMIN` to loopback (`127.0.0.1`, `::1`, `dns:localhost`) on a
+server that clients reach through a relay, proxy, or port forwarder on the
+same host: every client then arrives from localhost and receives admin access.
+The server logs a warning when it loads such a rule.
+
+Save the file. A background thread notices the change within about a second,
+so a connection made right after saving normally sees the new rules without a
+restart. If a line is malformed, the previous rules stay active and the problem
+is logged; fix the line and save again.
 
 Watch the log for the result:
 

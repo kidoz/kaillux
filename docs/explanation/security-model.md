@@ -12,7 +12,16 @@ server therefore treats the source address as the only stable identity:
   address;
 - admin chat commands verify that the command arrived from the peer address that
   performed the handshake;
-- access rules, temporary bans, and admin grants are keyed by address.
+- access rules, temporary bans, and admin grants are keyed by address;
+- until the login completes, the data port accepts only the three messages of
+  the login handshake; every other command is dropped without effect;
+- the identity is fixed once the login completes: a later `UserInformation`
+  message is ignored, so the name checks of the login cannot be skipped.
+
+Client text is treated as untrusted everywhere it is handled. Names, chat, game
+names, and quit messages reject control, direction-override, and zero-width
+characters (for normal users), and whatever is written to the log is escaped
+and capped in length, so client input cannot forge log entries.
 
 Everything else is policy: allowed addresses, allowed emulators, allowed games,
 name lengths, ping limits, connection types, flood intervals, and admission
@@ -39,6 +48,17 @@ active, or with `admin.security.failOnInsecureCredentials=true`, that warning
 becomes a startup failure. This prevents a deployment from silently exposing the
 admin API with a published default.
 
+The shipped `access.cfg` grants no admin access. A `user,ADMIN` rule for
+loopback is intended for local testing only: behind a relay, proxy, or port
+forwarder on the same host every client arrives from localhost. The server
+logs a warning when it loads such a rule.
+
+Each authenticated request checks the password with BCrypt, which costs tens of
+milliseconds of CPU whether or not the password is right. An address that
+fails authentication ten times within a minute is refused with 401 before the
+check, until the window passes. Addresses come from the connection, so clients
+behind a reverse proxy share one budget.
+
 The admin UI keeps the Basic authorization header in `sessionStorage`, so it is
 scoped to the tab and cleared when the session ends. It does not use cookies.
 
@@ -63,6 +83,11 @@ A missing or invalid credential returns HTTP 401 without a
 open the browser's own login dialog and leave `fetch()` waiting, which breaks
 the dashboard's ability to report a rejected password.
 
+Every response carries a Content Security Policy: scripts may only be loaded
+from the server itself. The dashboard keeps its credential where any script on
+the admin origin could read it, and the public Swagger UI is served from that
+same origin.
+
 The server serves plain HTTP. If the admin surface must cross an untrusted
 network, put a TLS-terminating reverse proxy in front of it and restrict access
 there. The bundled Compose file binds port 8080 to `127.0.0.1` for this reason.
@@ -83,6 +108,17 @@ expensive:
 The per-address HELLO limit and the connecting cap are tracked in memory and are
 per instance. The map of tracked addresses is bounded and swept; it is not a
 distributed rate limiter.
+
+Keep the per-address handshake cap a small fraction of `max-connecting`. A HELLO
+costs nothing to send, can carry a spoofed source address, and holds one of the
+few connecting slots until it times out. A HELLO that is never followed by a
+login expires after about 1.5 seconds; a handshake that stalls later gets
+`server.max-ping * 15` milliseconds.
+
+Logging is bounded as well. A packet that anyone can send to a public port
+cannot make the server write a log line per packet: warnings and errors that
+untrusted input can trigger are limited to a few per minute, followed by one
+summary line, and packet contents are only dumped at DEBUG level.
 
 ## What is not protected
 

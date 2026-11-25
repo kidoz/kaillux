@@ -71,13 +71,24 @@ data-port range.
 
 ## Connection and idle handling
 
-- `relay.max-connections` caps concurrent clients per relay controller.
-- The shared relay tracks each client by source address and expires a flow
-  after five minutes without traffic.
+- `relay.max-connections` caps concurrent flows per relay controller.
+- One source address may hold a fifth of that table (at least four flows, at
+  most fifty), so a single host cannot fill it from many source ports.
+- Nothing is allocated for a flow until its first datagram has been examined:
+  a datagram that the relay would reject never gets a socket or a thread.
+- A flow is tracked by source address and port. It expires after fifteen
+  seconds without traffic if the client sent only that one datagram, as a
+  spoofed source does, and after five minutes otherwise.
 - `relay.idle-timeout-seconds` (default 300) stops a V086 relay that has seen
   no traffic; `relay.cleanup-interval-seconds` (default 60) controls how often
   the check runs.
 - Setting `relay.idle-timeout-seconds=0` disables that cleanup.
+
+The backend sees every relayed client as coming from the relay's address. The
+backend's per-address limits therefore apply to all relayed clients together:
+its `server.max-connecting-per-address`, its `server.hello-rate-per-second`, a
+temporary ban of one relayed user, and any `user` rule that matches the relay's
+address.
 
 When a V086 relay is stopped, clients using it must reconnect through the
 handshake.

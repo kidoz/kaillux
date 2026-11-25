@@ -75,8 +75,10 @@ The image contains the default `access.cfg`. To use your own:
 
 The mount is read-only and `create_host_path: false` means a missing host file
 fails the start instead of creating a directory. The file is still monitored for
-changes, so edits apply without a restart. See
-[Configure access control](configure-access-control.md).
+changes, so edits apply without a restart. The container runs as the
+unprivileged user `kaillux` (UID 10001), so the file must be readable by that
+user. The service drops all capabilities and keeps its logs to five files of
+10 MB. See [Configure access control](configure-access-control.md).
 
 ## Change the user limit and port range
 

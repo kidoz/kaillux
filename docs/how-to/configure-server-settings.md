@@ -78,7 +78,7 @@ data controller binds the same addresses across the data-port range.
 ```properties
 server.max-users=25
 server.max-connecting=10
-server.max-connecting-per-address=8
+server.max-connecting-per-address=3
 server.hello-rate-per-second=5
 server.max-ping=250
 server.allowed-connection-types=1,2,3,4,5,6
@@ -86,11 +86,15 @@ server.allowed-connection-types=1,2,3,4,5,6
 
 - `max-users` caps logged-in users. Elevated and admin clients bypass it.
 - `max-connecting` caps in-progress handshakes; 0 disables the cap.
-- `max-connecting-per-address` caps handshakes from one source; 0 disables it.
+- `max-connecting-per-address` is the share of those handshakes that one
+  source may hold; 0 disables it. Keep it well below `max-connecting`, because
+  a HELLO can carry a spoofed source address.
 - `hello-rate-per-second` limits HELLO messages per source; 0 disables it.
 - `max-ping` rejects normal users above the threshold (milliseconds) at login.
-  It also sets the handshake timeout (`max-ping * 15` ms) and the maintenance
-  interval (`max-ping * 3` ms, with a one-second floor).
+  It also sets the handshake timeout (`max-ping * 15` ms once the client has
+  started logging in, `max(1500, max-ping * 6)` ms for a HELLO that never gets
+  that far) and the maintenance interval (`max-ping * 3` ms, with a
+  one-second floor).
 - `allowed-connection-types` is a comma-separated subset of 1–6. Normal users
   outside it are rejected at login.
 

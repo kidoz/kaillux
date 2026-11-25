@@ -30,7 +30,9 @@ environment of the server process, not only in your shell.
 
 The dashboard refreshes every ten seconds. Use the refresh button for an
 immediate update. The status line shows the last successful refresh; a failed
-request keeps the previous data and shows an error banner.
+request keeps the previous data and shows an error banner. Each request makes
+the server check the password, so the dashboard fetches only the data that the
+current view shows, and it stops refreshing while the tab is hidden.
 
 ## Kick a user
 
@@ -50,7 +52,9 @@ The dashboard stores the Basic authorization header in `sessionStorage`. It is
 scoped to the browser tab and is not sent as a cookie. **Sign out** clears it.
 
 An expired or rejected credential produces HTTP 401. The dashboard then returns
-to the sign-in screen instead of repeatedly retrying.
+to the sign-in screen instead of repeatedly retrying. Only a 401 ends the
+session: when the server cannot be reached while the page loads, the stored
+credential is kept and the error banner offers a retry.
 
 ## Use the API directly
 

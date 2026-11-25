@@ -21,7 +21,11 @@ curl -u 'admin:password' http://127.0.0.1:8080/api/admin/server-info
 ```
 
 A missing or invalid credential returns HTTP 401 without a
-`WWW-Authenticate` header.
+`WWW-Authenticate` header. Checking a password costs one BCrypt hash, so an
+address that failed ten times within a minute receives 401 for every later
+request until the window passes. Every response carries a Content Security
+Policy of `default-src 'self'; script-src 'self'; ...`; see
+[Security model](../explanation/security-model.md).
 
 The OpenAPI document is at `/api-docs` and Swagger UI at `/swagger-ui.html`.
 Both are public by default.
@@ -176,6 +180,9 @@ Request body:
 
 `reason` is optional. If missing or blank, the server uses
 "Kicked by administrator". The reason appears in the user's disconnect message.
+Control characters are removed from it, and it is cut to what
+`server.max-quit-message-length` allows; the response `message` says when that
+shortened it.
 
 ```bash
 curl -u 'admin:password' -X POST \
@@ -255,5 +262,6 @@ Each `v086Relays` entry:
 | 404 | The user ID does not exist. |
 | 500 | The action failed; see the `message` field. |
 
-The API does not implement rate limiting, roles, or audit logging. See
+The API has no roles and no audit logging, and it does not rate-limit successful
+requests. Only failed authentication attempts are limited, per address. See
 [Security model](../explanation/security-model.md).

@@ -51,7 +51,9 @@ with someone else's privilege.
 `TemporaryRuleStore` holds three rule types in memory:
 
 - **Ban** — denies connection from the address. Checked before the file's
-  `ipaddress` rules.
+  `ipaddress` rules, and it also makes `getAccess` return `BANNED`, so
+  sessions the address already has open lose their normal access and are
+  refused chat, game chat, and game creation at once.
 - **Admin grant** — returns `ADMIN` from `getAccess`. Checked before the file's
   `user` rules.
 - **Silence** — blocks chat, not connection. Checked by the chat moderation
@@ -69,7 +71,10 @@ Address patterns and name patterns use different matchers:
 - **Addresses** (`user`, `ipaddress`) use `DnsResolvingPattern`. Patterns are
   pipe-separated wildcard strings, matched case-insensitively against the
   textual IP address. A pattern prefixed with `dns:` is resolved to one or more
-  addresses and re-resolved every 60 seconds, which supports dynamic DNS.
+  addresses and re-resolved every 60 seconds, which supports dynamic DNS. A
+  failed lookup keeps the addresses of the last successful one, so a resolver
+  outage cannot turn a `dns:` deny rule into an allow. A complete IPv6 address
+  in a pattern is compared in uncompressed form.
 - **Names** (`game`, `emulator`) use `SimpleNamePattern`. Patterns are
   pipe-separated wildcard strings, matched case-insensitively against the name.
 
@@ -79,12 +84,16 @@ string match, not an address-range calculation.
 
 ## Hot reload
 
-The maintenance thread compares the file's modification time every 60 seconds.
-Many access checks also call `checkReload()` directly, so an edit is usually
-visible on the next connection or chat message, not only at the next tick.
+A background thread compares the file's modification time with that of the
+loaded rules about once a second. Access checks never touch the disk, so an
+edit is visible on the next connection or chat message after that, and a slow
+disk cannot stall them.
 
-Reload replaces all permanent rules atomically. A parse error on one line is
-logged and counted; that line is skipped. The rest of the file still loads.
+Reload parses the file first and then replaces all permanent rules at once. If
+a line is malformed, or the file changed while it was being read, the previous
+rules stay active and the problem is logged; the file is not read again until
+it changes once more. Dropping a bad line instead could silently have removed
+a `DENY` rule. Temporary rules are unaffected by a reload.
 Temporary rules are unaffected by a reload.
 
 ## Where the checks are applied

@@ -22,15 +22,16 @@ If no file is found, the server fails to start.
 <type>,<argument>,<patterns>[,<message>]
 ```
 
-- One rule per line.
+- One rule per line. Rules may be indented. The file is read as UTF-8.
 - Lines beginning with `#` or `//` at column 1 are comments. Indented comment
   lines are parsed as rules and produce an error.
 - Empty lines are ignored.
 - Fields are comma-separated. The optional user announcement is the third
   field and cannot contain a comma.
 - Type and keywords are case-insensitive.
-- A malformed line is logged, counted as an error, and skipped. The rest of the
-  file still loads.
+- A malformed line is logged and counted as an error. At startup the rest of
+  the file still loads. On a reload the previous rules stay active instead (see
+  [Reload behavior](#reload-behavior)).
 
 ## Rule types
 
@@ -52,7 +53,7 @@ line wins. If none matches, the access level is `NORMAL`.
 Examples:
 
 ```text
-user,ADMIN,dns:localhost,Server owner logged in
+user,ADMIN,192.0.2.10,Server owner logged in
 user,ELEVATED,198.51.100.20,
 user,NORMAL,2001:db8:*,Welcome IPv6 user
 ```
@@ -62,6 +63,13 @@ An empty third field still requires the trailing comma if you want no message:
 ```text
 user,ADMIN,192.168.1.10,
 ```
+
+Do not give `ADMIN` to loopback (`127.0.0.1`, `::1`, `dns:localhost`) on a
+server that clients reach through a relay, proxy, or port forwarder on the
+same host. Every client then arrives from localhost and receives that access.
+The server writes a warning to the log when it loads such a rule. The file
+shipped with the server has the rule commented out for this reason; enable it
+for local testing only.
 
 ### `ipaddress`
 
@@ -108,7 +116,9 @@ Address rules use `DnsResolvingPattern`:
 - `*` matches any run of characters, including none;
 - matching is case-insensitive against the textual IP address;
 - a pattern prefixed with `dns:` is resolved to one or more addresses and
-  re-resolved every 60 seconds;
+  re-resolved every 60 seconds; a failed lookup keeps the addresses of the
+  last successful one, and a hostname that has never resolved is logged as a
+  warning because a rule that names it matches no address;
 - there are no CIDR blocks, ranges, or regular expressions.
 
 Examples:
@@ -121,6 +131,12 @@ dns:kaillux.example.com
 ```
 
 `192.168.*` is a string match. It does not understand subnet masks.
+
+IPv6 addresses are compared in uncompressed form, `2001:db8:0:0:0:0:0:1`. A
+complete IPv6 address in a pattern is normalized for you, so
+`ipaddress,DENY,2001:db8::1` works. A pattern that combines `::` with `*`
+does not: write such a prefix in full, for example
+`ipaddress,DENY,2001:db8:0:0:0:0:0:*`.
 
 ### Name patterns
 
@@ -143,7 +159,10 @@ Game and emulator rules use `SimpleNamePattern`:
 
 Temporary runtime rules are evaluated around the file rules:
 
-- a temporary ban denies the address before `ipaddress` rules;
+- a temporary ban denies the address before `ipaddress` rules, and also takes
+  `NORMAL` access away from sessions the address already has open: chat, game
+  chat, and game creation are refused at once, until the maintenance pass
+  disconnects the session;
 - a temporary admin grant returns `ADMIN` before `user` rules;
 - a temporary silence blocks chat independently of the file.
 
@@ -162,13 +181,16 @@ for an address. Temporary rules are lost when the server restarts.
 
 ## Reload behavior
 
-The maintenance thread checks the file's modification time every 60 seconds,
-and many access checks trigger a reload immediately. A reload:
+A background thread compares the file's modification time with that of the
+loaded rules about once a second. Access checks themselves never touch the
+disk. When the file has changed, a reload:
 
-- replaces all permanent rules atomically;
+- parses the file and then replaces all permanent rules at once;
+- keeps the previous rules, and logs the problem, when a line is malformed or
+  the file changed while it was being read; the file is not read again until
+  it changes once more;
 - does not affect temporary rules;
-- refreshes DNS resolutions every maintenance cycle;
-- logs the number of loaded rules and errors.
+- refreshes DNS resolutions every 60 seconds, without blocking access checks.
 
 The log entry looks like:
 
@@ -182,8 +204,8 @@ Loaded 8 rules (0 errors)
 Allow only a private network:
 
 ```text
-user,ADMIN,192.168.*|127.0.0.1,Local admin
-ipaddress,ALLOW,192.168.*|127.0.0.1
+user,ADMIN,192.168.*,Local admin
+ipaddress,ALLOW,192.168.*
 ipaddress,DENY,*
 game,ALLOW,*
 emulator,ALLOW,*

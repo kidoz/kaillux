@@ -31,11 +31,11 @@ Lists are comma-separated in both forms. Changes require a restart; only
 
 | Property | Default | Description |
 |---|---|---|
-| `server.max-ping` | `250` | Maximum login ping in milliseconds for normal users. Also drives the maintenance interval (`max(1000, max-ping * 3)` ms) and the handshake timeout (`max-ping * 15` ms). |
+| `server.max-ping` | `250` | Maximum login ping in milliseconds for normal users. Also drives the maintenance interval (`max(1000, max-ping * 3)` ms), the handshake timeout (`max-ping * 15` ms once the client has started logging in), and the timeout for a HELLO that is never followed by a login (`max(1500, max-ping * 6)` ms). |
 | `server.allowed-connection-types` | `1,2,3,4,5,6` | Connection types normal users may use. |
 | `server.max-users` | `25` | Maximum logged-in users. Elevated and admin users bypass it. 0 disables the cap. |
 | `server.max-connecting` | `10` | Maximum in-progress handshakes. 0 disables the cap. |
-| `server.max-connecting-per-address` | `8` | Maximum in-progress handshakes from one source address. 0 disables the cap. |
+| `server.max-connecting-per-address` | `3` | Share of the in-progress handshakes that one source address may hold. Keep it well below `max-connecting`: a HELLO can carry a spoofed source address. 0 disables the cap. |
 | `server.hello-rate-per-second` | `5` | Maximum HELLO messages per source per second. 0 disables the limit. |
 | `server.max-games` | `0` | Maximum game rooms for normal users; 0 means unlimited. Elevated and admin users bypass it. |
 | `server.allow-single-player` | `true` | Allow a normal user to start a room alone. |
@@ -43,7 +43,7 @@ Lists are comma-separated in both forms. Changes require a restart; only
 | `server.keep-alive-timeout` | `190` | Seconds without a keepalive before a logged-in user is disconnected. |
 | `server.idle-timeout` | `900` | Seconds without activity before an idle normal user is disconnected. 0 disables it. |
 | `server.chat-flood-time` | `2` | Minimum seconds between chat messages from one user. 0 disables the interval. |
-| `server.create-game-flood-time` | `2` | Minimum seconds between game creations by one user. 0 disables the interval. |
+| `server.create-game-flood-time` | `2` | Minimum seconds between one user's attempts to create a game. Every attempt counts, whether or not it succeeded, so a denied request cannot be retried at once. 0 disables the interval. |
 | `server.max-user-name-length` | `45` | Maximum user name length in characters. |
 | `server.max-client-name-length` | `100` | Maximum emulator/client name length in characters. |
 | `server.max-chat-length` | `150` | Maximum chat message length in characters. |
@@ -128,7 +128,10 @@ classpath. See [Access configuration file](access-config-file.md).
 ## Logging
 
 Logging is configured in `src/main/resources/logback.xml`, not in
-`application.properties`. The default logs to the console at DEBUG for
-`su.kidoz` packages and INFO for Spring. A rolling file appender writing
-`kaillux.log` is defined but disabled. See
-[Monitor the server](../how-to/monitor-the-server.md).
+`application.properties`. The default logs to the console at INFO. DEBUG is
+verbose, because it records per-packet events on the ports that anyone can
+reach, so enable it for one package only while diagnosing a problem. A rolling
+file appender writing `kaillux.log` is defined but disabled. Warnings that a
+remote peer can trigger, such as rejected packets and refused handshakes, are
+limited to a few lines per minute; a summary line reports how many were left
+out. See [Monitor the server](../how-to/monitor-the-server.md).

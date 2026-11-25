@@ -18,9 +18,11 @@ Load-tagged tests are excluded by default. The suite runs on Java 25 with JUnit
 ./gradlew check
 ```
 
-This runs the tests plus Checkstyle, SpotBugs, Spotless, and the JaCoCo report.
-The build treats compiler warnings as errors (`-Werror`), so an unused import or
-a deprecated API can fail compilation.
+This runs the tests plus Checkstyle, SpotBugs, Spotless, the JaCoCo report, and
+the coverage threshold. The report and the threshold measure the same classes:
+`jacocoTestCoverageVerification` is part of `check`, so a drop below 40% fails
+the build. The build treats compiler warnings as errors (`-Werror`), so an
+unused import or a deprecated API can fail compilation.
 
 Useful individual tasks:
 

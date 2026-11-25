@@ -48,14 +48,17 @@ server.max-users=50
 
 ```properties
 server.max-connecting=10
-server.max-connecting-per-address=4
+server.max-connecting-per-address=3
 server.hello-rate-per-second=3
 ```
 
 These limits are independent. `max-connecting` protects the server as a whole
 during handshakes; the per-address cap and HELLO rate stop one source from
-occupying every slot. Values that are too low can reject legitimate clients
-behind a shared NAT, so tune them against real traffic.
+occupying every slot. Keep the per-address cap a small fraction of
+`max-connecting`: each HELLO holds a slot for a few seconds, a HELLO can carry
+a spoofed source address, and an IPv6 host has a whole /64 of addresses to
+send from. Values that are too low can reject legitimate clients behind a
+shared NAT, so tune them against real traffic.
 
 ## 4. Reject poor or unwanted clients
 
@@ -99,7 +102,8 @@ desyncs; measure before changing them.
 ## 6. Run with least privilege
 
 - Run as an unprivileged account. The Arch service already does this and enables
-  systemd hardening options.
+  systemd hardening options. The container image runs as the unprivileged user
+  `kaillux`, and `compose.yaml` drops all capabilities.
 - Restrict `access.cfg` and any file containing the admin password to the
   service account (`chmod 600`).
 - Keep the JVM and OS patched.
@@ -118,7 +122,10 @@ Do not expose the admin port, metrics, or Swagger UI directly to the internet.
 
 ## 8. Watch for abuse
 
-- Enable and review logs for repeated denials, flood warnings, and desyncs.
+- Enable and review logs for repeated denials, flood warnings, and desyncs. A
+  line such as `... further events suppressed in the last window` means a
+  remote peer triggered more warnings than the log limit allows; the counters
+  below show how many were refused.
 - Scrape `/metrics` from inside the network and alert on unusual desync, drop,
   or connection-denial rates.
 - Use `GET /api/admin/server-info` to watch `deniedFull` and `deniedOther`.
