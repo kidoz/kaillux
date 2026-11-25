@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import su.kidoz.config.RelayConfig;
+import su.kidoz.config.ServerConfig;
 import su.kidoz.kaillera.admin.dto.ActionResultDTO;
 import su.kidoz.kaillera.admin.dto.ControllerDTO;
 import su.kidoz.kaillera.admin.dto.EventMetricsDTO;
@@ -35,6 +36,7 @@ import su.kidoz.kaillera.admin.dto.UserDTO;
 import su.kidoz.kaillera.controller.connectcontroller.ConnectController;
 import su.kidoz.kaillera.model.KailleraGame;
 import su.kidoz.kaillera.model.KailleraUser;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.kaillera.relay.KailleraRelayController;
 import su.kidoz.kaillera.release.KailleraServerReleaseInfo;
 import su.kidoz.kaillera.service.GameService;
@@ -57,6 +59,12 @@ public class AdminRestController {
 
     private static final Logger log = LoggerFactory.getLogger(AdminRestController.class);
 
+    /** Prefix put in front of the kick reason in the message the user sees. */
+    static final String KICK_MESSAGE_PREFIX = "Kicked: ";
+
+    /** Reason used when the administrator does not give one. */
+    static final String DEFAULT_KICK_REASON = "Kicked by administrator";
+
     private final UserService userService;
     private final GameService gameService;
     private final KailleraServerReleaseInfo releaseInfo;
@@ -64,12 +72,13 @@ public class AdminRestController {
     private final EmuLinkerExecutor executor;
     private final Optional<KailleraRelayController> relayController;
     private final Optional<RelayConfig> relayConfig;
+    private final ServerConfig serverConfig;
 
     @Autowired
     public AdminRestController(UserService userService, GameService gameService,
             KailleraServerReleaseInfo releaseInfo, ConnectController connectController,
             EmuLinkerExecutor executor, Optional<KailleraRelayController> relayController,
-            Optional<RelayConfig> relayConfig) {
+            Optional<RelayConfig> relayConfig, ServerConfig serverConfig) {
         this.userService = userService;
         this.gameService = gameService;
         this.releaseInfo = releaseInfo;
@@ -77,6 +86,7 @@ public class AdminRestController {
         this.executor = executor;
         this.relayController = relayController;
         this.relayConfig = relayConfig;
+        this.serverConfig = serverConfig;
     }
 
     @Operation(summary = "Get server information", description = "Returns comprehensive server status including version, uptime, "
@@ -97,7 +107,8 @@ public class AdminRestController {
                 executor.getTaskCount());
 
         return new ServerInfoDTO(releaseInfo.getProductName(), releaseInfo.getVersionString(),
-                releaseInfo.getBuildNumber(), true, connectController.getBindPort(),
+                releaseInfo.getBuildNumber(), connectController.isRunning(),
+                connectController.getBindPort(),
                 (System.currentTimeMillis() - connectController.getStartTime()) / 60000,
                 userService.getUserCount(), userService.getMaxUsers(), gameService.getGameCount(),
                 gameService.getMaxGames(), stats, threadPool);
@@ -118,7 +129,7 @@ public class AdminRestController {
                 address = socketAddr.getAddress().getHostAddress() + ":" + socketAddr.getPort();
             }
             return new UserDTO(user.getID(), user.getName(),
-                    KailleraUser.STATUS_NAMES[user.getStatus()],
+                    KailleraUser.getStatusName(user.getStatus()),
                     KailleraUser.getConnectionTypeName(user.getConnectionType()), user.getPing(),
                     address, user.getConnectTime());
         }).collect(Collectors.toList());
@@ -133,7 +144,7 @@ public class AdminRestController {
     public List<GameDTO> getGames() {
         return gameService.getAllGames().stream()
                 .map(game -> new GameDTO(game.getID(), game.getRomName(), game.getOwner().getName(),
-                        KailleraGame.STATUS_NAMES[game.getStatus()], game.getNumPlayers()))
+                        KailleraGame.getStatusName(game.getStatus()), game.getNumPlayers()))
                 .collect(Collectors.toList());
     }
 
@@ -221,21 +232,47 @@ public class AdminRestController {
         }
 
         KailleraUser user = userOpt.get();
-        String reason = request.reason();
-        if (reason == null || reason.isBlank()) {
-            reason = "Kicked by administrator";
-        }
+        String requested = InputValidator.sanitize(request.reason());
+        String reason = kickReason(requested);
+        boolean shortened = requested != null && reason.length() < requested.length();
 
         try {
-            userService.quit(user, "Kicked: " + reason);
+            userService.quit(user, KICK_MESSAGE_PREFIX + reason);
             log.info("Admin kicked user {} (ID: {}): {}", user.getName(), userId, reason);
-            return ResponseEntity
-                    .ok(ActionResultDTO.ok("User " + user.getName() + " has been kicked"));
+            return ResponseEntity.ok(ActionResultDTO.ok("User " + user.getName()
+                    + " has been kicked"
+                    + (shortened
+                            ? ". The reason was shortened to fit the message the user receives."
+                            : "")));
         } catch (Exception e) {
             log.error("Failed to kick user {}: {}", userId, e.getMessage(), e);
             return ResponseEntity.internalServerError()
                     .body(ActionResultDTO.error("Failed to kick user: " + e.getMessage()));
         }
+    }
+
+    /**
+     * Brings the reason into the form the user can receive.
+     *
+     * <p>
+     * The server replaces a quit message that is too long or unprintable with its
+     * standard text, which would drop the reason without telling the administrator.
+     * So the reason is cut here to what fits.
+     *
+     * @param cleaned
+     *            the reason with its unprintable characters removed, possibly null
+     * @return the reason to put after {@link #KICK_MESSAGE_PREFIX}
+     */
+    String kickReason(String cleaned) {
+        if (cleaned == null || cleaned.isBlank()) {
+            return DEFAULT_KICK_REASON;
+        }
+
+        int maxLength = serverConfig.getMaxQuitMessageLength();
+        int available = maxLength - KICK_MESSAGE_PREFIX.length();
+        return (maxLength > 0 && cleaned.length() > available)
+                ? cleaned.substring(0, available)
+                : cleaned;
     }
 
     /**

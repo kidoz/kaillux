@@ -1,9 +1,14 @@
 package su.kidoz.kaillera.admin;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -13,6 +18,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
+import su.kidoz.config.ServerConfig;
 import su.kidoz.kaillera.controller.KailleraServerController;
 import su.kidoz.kaillera.controller.connectcontroller.ConnectController;
 import su.kidoz.kaillera.model.KailleraGame;
@@ -26,6 +32,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.MediaType;
@@ -63,8 +70,76 @@ class AdminRestControllerTest {
     @BeforeEach
     void setUp() {
         AdminRestController controller = new AdminRestController(userService, gameService,
-                releaseInfo, connectController, executor, Optional.empty(), Optional.empty());
+                releaseInfo, connectController, executor, Optional.empty(), Optional.empty(),
+                new ServerConfig());
         mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+    }
+
+    @Nested
+    @DisplayName("POST /api/admin/users/{userId}/kick")
+    class KickUser {
+
+        private KailleraUser kickable() {
+            KailleraUser user = mock(KailleraUser.class);
+            when(userService.findUser(7)).thenReturn(Optional.of(user));
+            when(user.getName()).thenReturn("Player7");
+            return user;
+        }
+
+        private org.springframework.test.web.servlet.ResultActions kick(String reasonJson)
+                throws Exception {
+            return mockMvc
+                    .perform(post("/api/admin/users/7/kick").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"reason\":" + reasonJson + "}"));
+        }
+
+        @Test
+        @DisplayName("should kick with the default reason when none is given")
+        void shouldKickWithTheDefaultReasonWhenNoneIsGiven() throws Exception {
+            KailleraUser user = kickable();
+
+            kick("\"  \"").andExpect(status().isOk()).andExpect(jsonPath("$.success").value(true));
+
+            verify(userService).quit(user, "Kicked: Kicked by administrator");
+        }
+
+        @Test
+        @DisplayName("should cut the reason to what the quit message can carry")
+        void shouldCutTheReasonToWhatTheQuitMessageCanCarry() throws Exception {
+            KailleraUser user = kickable();
+
+            kick("\"" + "r".repeat(90) + "\"").andExpect(status().isOk()).andExpect(
+                    jsonPath("$.message").value(org.hamcrest.Matchers.containsString("shortened")));
+
+            // The server replaces a quit message longer than
+            // server.max-quit-message-length (75) by its standard text, which used
+            // to drop the reason without telling the administrator.
+            ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
+            verify(userService).quit(eq(user), message.capture());
+            assertEquals(75, message.getValue().length());
+            assertTrue(message.getValue().startsWith("Kicked: rrrr"));
+        }
+
+        @Test
+        @DisplayName("should keep a reason that fits as it is")
+        void shouldKeepAReasonThatFitsAsItIs() throws Exception {
+            KailleraUser user = kickable();
+
+            kick("\"Excessive lag\"").andExpect(status().isOk())
+                    .andExpect(jsonPath("$.message").value("User Player7 has been kicked"));
+
+            verify(userService).quit(user, "Kicked: Excessive lag");
+        }
+
+        @Test
+        @DisplayName("should remove control characters from the reason")
+        void shouldRemoveControlCharactersFromTheReason() throws Exception {
+            KailleraUser user = kickable();
+
+            kick("\"bye\\nFORGED LOG LINE\"").andExpect(status().isOk());
+
+            verify(userService).quit(user, "Kicked: byeFORGED LOG LINE");
+        }
     }
 
     @Nested
@@ -85,6 +160,7 @@ class AdminRestControllerTest {
             when(gameService.getMaxGames()).thenReturn(50);
 
             when(connectController.getBindPort()).thenReturn(27888);
+            when(connectController.isRunning()).thenReturn(true);
             when(connectController.getStartTime()).thenReturn(System.currentTimeMillis() - 60000);
             when(connectController.getRequestCount()).thenReturn(1000);
             when(connectController.getConnectCount()).thenReturn(500);
