@@ -56,19 +56,21 @@ public interface KailleraUser {
     /** Bad internet connection - highest latency tolerance. */
     byte CONNECTION_TYPE_BAD = 6;
 
-    /** Human-readable names for connection types indexed by type value. */
-    String[] CONNECTION_TYPE_NAMES = {"DISABLED", "Lan", "Excellent", "Good", "Average", "Low",
-            "Bad"};
-
     /**
      * Returns the connection type name for the given type, or "Unknown(n)" for
      * invalid values.
      */
     static String getConnectionTypeName(int connectionType) {
-        if (connectionType >= 0 && connectionType < CONNECTION_TYPE_NAMES.length) {
-            return CONNECTION_TYPE_NAMES[connectionType];
-        }
-        return "Unknown(" + connectionType + ")";
+        return switch (connectionType) {
+            case 0 -> "DISABLED";
+            case CONNECTION_TYPE_LAN -> "Lan";
+            case CONNECTION_TYPE_EXCELLENT -> "Excellent";
+            case CONNECTION_TYPE_GOOD -> "Good";
+            case CONNECTION_TYPE_AVERAGE -> "Average";
+            case CONNECTION_TYPE_LOW -> "Low";
+            case CONNECTION_TYPE_BAD -> "Bad";
+            default -> "Unknown(" + connectionType + ")";
+        };
     }
 
     /** User is currently playing in a game. */
@@ -77,8 +79,23 @@ public interface KailleraUser {
     byte STATUS_IDLE = 1;
     /** User is connecting but has not completed login. */
     byte STATUS_CONNECTING = 2;
-    /** Human-readable names for status values indexed by status value. */
-    String[] STATUS_NAMES = {"Playing", "Idle", "Connecting"};
+
+    /**
+     * Returns the name of a status value as shown to administrators and in logs, or
+     * "Unknown(n)" for an invalid value.
+     *
+     * @param status
+     *            one of the STATUS_ constants
+     * @return the display name of the status
+     */
+    static String getStatusName(int status) {
+        return switch (status) {
+            case STATUS_PLAYING -> "Playing";
+            case STATUS_IDLE -> "Idle";
+            case STATUS_CONNECTING -> "Connecting";
+            default -> "Unknown(" + status + ")";
+        };
+    }
 
     int getID();
 

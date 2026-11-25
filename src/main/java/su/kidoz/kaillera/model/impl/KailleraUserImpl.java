@@ -4,6 +4,7 @@ import java.net.InetSocketAddress;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import su.kidoz.kaillera.access.AccessManager;
 import su.kidoz.kaillera.model.KailleraGame;
@@ -34,15 +35,21 @@ import su.kidoz.kaillera.model.exception.QuitGameException;
 import su.kidoz.kaillera.model.exception.StartGameException;
 import su.kidoz.kaillera.model.exception.UserNameException;
 import su.kidoz.kaillera.model.exception.UserReadyException;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.util.EmuLang;
 import su.kidoz.util.EmuUtil;
 import su.kidoz.util.Executable;
+import su.kidoz.util.ThrottledLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public final class KailleraUserImpl implements KailleraUser, Executable {
     private static final Logger log = LoggerFactory.getLogger(KailleraUserImpl.class);
     private static final String EMULINKER_CLIENT_NAME = "Emulinker Suprclient";
+    // A stalled client makes every arriving event fail to queue, so these may not
+    // be written once per event.
+    private static final ThrottledLogger QUEUE_LOG = new ThrottledLogger(log,
+            "user event queue pressure");
 
     private final KailleraServerImpl server;
     private volatile KailleraGameImpl game;
@@ -65,6 +72,7 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
     private volatile long lastActivity;
     private volatile long lastKeepAlive;
     private volatile long lastChatTime;
+    private volatile long lastGameChatTime;
     private volatile long lastCreateGameTime;
     private volatile long lastTimeout;
 
@@ -82,7 +90,7 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
     private final EventDispatcher eventDispatcher;
     private final BlockingQueue<KailleraEvent> eventQueue = new LinkedBlockingQueue<>(
             MAX_EVENT_QUEUE_SIZE);
-    private volatile int droppedEventsCount = 0;
+    private final AtomicInteger droppedEventsCount = new AtomicInteger();
 
     public KailleraUserImpl(int userID, String protocol, InetSocketAddress connectSocketAddress,
             EventDispatcher eventDispatcher, KailleraServerImpl server) {
@@ -162,9 +170,25 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         return name;
     }
 
+    /**
+     * True once the client sent its UserInformation, which is the first step of the
+     * login handshake.
+     *
+     * @return true if the login handshake has started
+     */
+    public boolean hasStartedLogin() {
+        return getName() != null;
+    }
+
     public void setName(String name) {
         this.name = name;
-        toString = "User" + id + "(" + (name.length() > 15 ? (name.substring(0, 15) + "...") : name)
+        // The name is untrusted until LoginValidator approves it, yet it reaches the
+        // log through toString(), so keep only printable characters in that form.
+        String displayName = InputValidator.sanitize(name);
+        if (displayName == null || displayName.isEmpty())
+            displayName = "?";
+        toString = "User" + id + "("
+                + (displayName.length() > 15 ? (displayName.substring(0, 15) + "...") : displayName)
                 + "/" + connectSocketAddress.getAddress().getHostAddress() + ")";
     }
 
@@ -246,6 +270,15 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         return lastChatTime;
     }
 
+    public long getLastGameChatTime() {
+        return lastGameChatTime;
+    }
+
+    /** Records when the user last sent a game chat message that was accepted. */
+    protected void setLastGameChatTime(long lastGameChatTime) {
+        this.lastGameChatTime = lastGameChatTime;
+    }
+
     protected long getLastCreateGameTime() {
         return lastCreateGameTime;
     }
@@ -265,7 +298,7 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
 
     @Override
     public String getAccessStr() {
-        return AccessManager.ACCESS_NAMES[access];
+        return AccessManager.getAccessName(access);
     }
 
     public void setAccess(int access) {
@@ -314,9 +347,7 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         sb.append(getProtocol());
         sb.append(" status=");
         int statusIdx = getStatus();
-        sb.append(statusIdx >= 0 && statusIdx < KailleraUser.STATUS_NAMES.length
-                ? KailleraUser.STATUS_NAMES[statusIdx]
-                : "Unknown(" + statusIdx + ")");
+        sb.append(KailleraUser.getStatusName(statusIdx));
         sb.append(" name=");
         sb.append(getName());
         sb.append(" clientType=");
@@ -383,7 +414,7 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         updateLastActivity();
 
         if (game == null) {
-            log.warn(this + " kick User " + userID + " failed: Not in a game");
+            log.debug(this + " kick User " + userID + " failed: Not in a game");
             throw new GameKickException(EmuLang.getString("KailleraUserImpl.KickErrorNotInGame"));
         }
 
@@ -395,18 +426,25 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         updateLastActivity();
 
         if (getStatus() == KailleraUser.STATUS_PLAYING) {
-            log.warn(this + " create game failed: User status is Playing!");
+            log.debug(this + " create game failed: User status is Playing!");
             throw new CreateGameException(
                     EmuLang.getString("KailleraUserImpl.CreateGameErrorAlreadyInGame"));
         } else if (getStatus() == KailleraUser.STATUS_CONNECTING) {
-            log.warn(this + " create game failed: User status is Connecting!");
+            log.debug(this + " create game failed: User status is Connecting!");
             throw new CreateGameException(
                     EmuLang.getString("KailleraUserImpl.CreateGameErrorNotFullyConnected"));
         }
 
-        KailleraGame game = server.createGame(this, romName);
-        lastCreateGameTime = System.currentTimeMillis();
-        return game;
+        // The flood check in the server compares with the time of the previous
+        // attempt, so the timestamp must not move before that check has run. It is
+        // set after the attempt, whether or not a game was created: every attempt
+        // starts a new interval, so a denied request cannot be retried at packet
+        // rate.
+        try {
+            return server.createGame(this, romName);
+        } finally {
+            lastCreateGameTime = System.currentTimeMillis();
+        }
     }
 
     public synchronized void quit(String message)
@@ -420,23 +458,23 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         updateLastActivity();
 
         if (game != null) {
-            log.warn(this + " join game failed: Already in: " + game);
+            log.debug(this + " join game failed: Already in: " + game);
             throw new JoinGameException(
                     EmuLang.getString("KailleraUserImpl.JoinGameErrorAlreadyInGame"));
         }
         if (getStatus() == KailleraUser.STATUS_PLAYING) {
-            log.warn(this + " join game failed: User status is Playing!");
+            log.debug(this + " join game failed: User status is Playing!");
             throw new JoinGameException(
                     EmuLang.getString("KailleraUserImpl.JoinGameErrorAnotherGameRunning"));
         } else if (getStatus() == KailleraUser.STATUS_CONNECTING) {
-            log.warn(this + " join game failed: User status is Connecting!");
+            log.debug(this + " join game failed: User status is Connecting!");
             throw new JoinGameException(
                     EmuLang.getString("KailleraUserImpl.JoinGameErrorNotFullConnected"));
         }
 
         KailleraGameImpl game = (KailleraGameImpl) server.getGame(gameID);
         if (game == null) {
-            log.warn(this + " join game failed: Game " + gameID + " does not exist!");
+            log.debug(this + " join game failed: Game " + gameID + " does not exist!");
             throw new JoinGameException(
                     EmuLang.getString("KailleraUserImpl.JoinGameErrorDoesNotExist"));
         }
@@ -467,7 +505,11 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
 
     public synchronized void dropGame() throws DropGameException {
         updateLastActivity();
-        setStatus(KailleraUser.STATUS_IDLE);
+
+        // Only a player leaves the playing state here; a session that has not
+        // reached it must keep its status.
+        if (status == KailleraUser.STATUS_PLAYING)
+            setStatus(KailleraUser.STATUS_IDLE);
 
         // Capture volatile fields to local variables for thread-safety
         KailleraGameImpl currentGame = game;
@@ -614,24 +656,24 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         }
 
         if (!added) {
-            droppedEventsCount++;
+            int dropped = droppedEventsCount.incrementAndGet();
             if (isCritical) {
-                log.error(this + ": CRITICAL event queue full after " + CRITICAL_EVENT_TIMEOUT_MS
-                        + "ms timeout, dropping: " + event.getClass().getSimpleName());
-            } else if (droppedEventsCount <= DROPPED_EVENTS_LOG_THRESHOLD) {
-                log.warn(this + ": event queue full, dropping: " + event.getClass().getSimpleName()
-                        + " (dropped " + droppedEventsCount + " events)");
-            } else if (droppedEventsCount == DROPPED_EVENTS_LOG_THRESHOLD + 1) {
-                log.warn(this + ": suppressing further event drop warnings");
+                QUEUE_LOG.error("{}: CRITICAL event queue full after {}ms timeout, dropping: {}",
+                        this, CRITICAL_EVENT_TIMEOUT_MS, event.getClass().getSimpleName());
+            } else if (dropped <= DROPPED_EVENTS_LOG_THRESHOLD) {
+                QUEUE_LOG.warn("{}: event queue full, dropping: {} (dropped {} events)", this,
+                        event.getClass().getSimpleName(), dropped);
+            } else if (dropped == DROPPED_EVENTS_LOG_THRESHOLD + 1) {
+                QUEUE_LOG.warn("{}: suppressing further event drop warnings", this);
             }
         } else {
             // Reset counter on successful add
-            droppedEventsCount = 0;
+            droppedEventsCount.set(0);
 
             // Warn when queue is approaching capacity
             int currentSize = eventQueue.size();
             if (currentSize >= QUEUE_WARNING_THRESHOLD) {
-                log.warn("{}: event queue at {}% capacity ({}/{})", this,
+                QUEUE_LOG.warn("{}: event queue at {}% capacity ({}/{})", this,
                         (currentSize * 100) / MAX_EVENT_QUEUE_SIZE, currentSize,
                         MAX_EVENT_QUEUE_SIZE);
             }
@@ -645,7 +687,7 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
 
     @Override
     public int getDroppedEventsCount() {
-        return droppedEventsCount;
+        return droppedEventsCount.get();
     }
 
     public void run() {

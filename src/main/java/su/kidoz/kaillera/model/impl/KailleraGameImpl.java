@@ -35,10 +35,16 @@ import su.kidoz.kaillera.model.exception.JoinGameException;
 import su.kidoz.kaillera.model.exception.QuitGameException;
 import su.kidoz.kaillera.model.exception.StartGameException;
 import su.kidoz.kaillera.model.exception.UserReadyException;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.util.EmuLang;
+import su.kidoz.util.ThrottledLogger;
 
 public final class KailleraGameImpl implements KailleraGame {
     private static final Logger log = LoggerFactory.getLogger(KailleraGameImpl.class);
+    // A logged-in client can send denied requests at packet rate, so these warnings
+    // must stay bounded.
+    private static final ThrottledLogger DENIED_LOG = new ThrottledLogger(log,
+            "denied game request");
 
     // ReadWriteLock for concurrent read access, exclusive write access
     private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
@@ -79,8 +85,12 @@ public final class KailleraGameImpl implements KailleraGame {
         this.timeoutMillis = timeoutMillis;
         this.desynchTimeouts = desynchTimeouts;
 
+        String displayName = InputValidator.sanitize(romName);
+        if (displayName == null || displayName.isEmpty())
+            displayName = "?";
         toString = "Game" + id + "("
-                + (romName.length() > 15 ? (romName.substring(0, 15) + "...") : romName) + ")";
+                + (displayName.length() > 15 ? (displayName.substring(0, 15) + "...") : displayName)
+                + ")";
         startDate = new Date();
 
         statsCollector = server.getStatsCollector();
@@ -171,7 +181,7 @@ public final class KailleraGameImpl implements KailleraGame {
         sb.append(" numPlayers=");
         sb.append(getNumPlayers());
         sb.append(" status=");
-        sb.append(KailleraGame.STATUS_NAMES[getStatus()]);
+        sb.append(KailleraGame.getStatusName(getStatus()));
         sb.append("]");
         return sb.toString();
     }
@@ -217,7 +227,7 @@ public final class KailleraGameImpl implements KailleraGame {
         readLock.lock();
         try {
             if (!players.contains(user)) {
-                log.warn(user + " game chat denied: not in " + this);
+                DENIED_LOG.warn("{}: game chat denied: not in {}", user, this);
                 throw new GameChatException(
                         EmuLang.getString("KailleraGameImpl.GameChatErrorNotInGame"));
             }
@@ -231,7 +241,38 @@ public final class KailleraGameImpl implements KailleraGame {
                 throw new GameChatException("Chat message too long");
             }
 
-            log.info(user + ", " + this + " gamechat: " + message);
+            // The lobby rules apply inside a game as well. Without them a game member
+            // can put control characters into every member's client and into the log,
+            // and can relay messages at packet rate.
+            int access = server.getAccessManager().getAccess(user.getSocketAddress().getAddress());
+
+            // Only elevated and admin clients are exempt from the rules below. A
+            // banned session is not: it loses the exemptions the moment the ban
+            // applies, not when the maintenance pass disconnects it.
+            if (access < AccessManager.ACCESS_NORMAL) {
+                DENIED_LOG.warn("{}: game chat denied: Banned", user);
+                throw new GameChatException(EmuLang.getString("KailleraServerImpl.DeniedBanned"));
+            }
+
+            if (access <= AccessManager.ACCESS_NORMAL) {
+                KailleraUserImpl sender = (KailleraUserImpl) user;
+                int floodSeconds = server.getChatFloodTime();
+                if (floodSeconds > 0 && System.currentTimeMillis()
+                        - sender.getLastGameChatTime() < floodSeconds * 1000L) {
+                    DENIED_LOG.warn("{}: game chat denied: flood control", user);
+                    throw new GameChatException(
+                            EmuLang.getString("KailleraServerImpl.ChatDeniedFloodControl"));
+                }
+
+                if (InputValidator.hasIllegalCharacters(message)) {
+                    DENIED_LOG.warn("{}: game chat denied: illegal characters", user);
+                    throw new GameChatException(
+                            EmuLang.getString("KailleraServerImpl.ChatDeniedIllegalCharacters"));
+                }
+                sender.setLastGameChatTime(System.currentTimeMillis());
+            }
+
+            log.info(user + ", " + this + " gamechat: " + InputValidator.sanitizeForLog(message));
             addEvent(new GameChatEvent(this, user, message));
         } finally {
             readLock.unlock();
@@ -254,13 +295,13 @@ public final class KailleraGameImpl implements KailleraGame {
         writeLock.lock();
         try {
             if (!user.equals(getOwner())) {
-                log.warn(user + " kick denied: not the owner of " + this);
+                DENIED_LOG.warn("{}", user + " kick denied: not the owner of " + this);
                 throw new GameKickException(
                         EmuLang.getString("KailleraGameImpl.GameKickDeniedNotGameOwner"));
             }
 
             if (user.getID() == userID) {
-                log.warn(user + " kick denied: attempt to kick self");
+                DENIED_LOG.warn("{}", user + " kick denied: attempt to kick self");
                 throw new GameKickException(
                         EmuLang.getString("KailleraGameImpl.GameKickDeniedCannotKickSelf"));
             }
@@ -274,7 +315,8 @@ public final class KailleraGameImpl implements KailleraGame {
             }
 
             if (target == null) {
-                log.warn(user + " kick failed: user " + userID + " not found in: " + this);
+                DENIED_LOG.warn("{}",
+                        user + " kick failed: user " + userID + " not found in: " + this);
                 throw new GameKickException(
                         EmuLang.getString("KailleraGameImpl.GameKickErrorUserNotFound"));
             }
@@ -299,7 +341,7 @@ public final class KailleraGameImpl implements KailleraGame {
         writeLock.lock();
         try {
             if (players.contains(user)) {
-                log.warn(user + " join game denied: already in " + this);
+                DENIED_LOG.warn("{}", user + " join game denied: already in " + this);
                 throw new JoinGameException(
                         EmuLang.getString("KailleraGameImpl.JoinGameErrorAlreadyInGame"));
             }
@@ -311,15 +353,24 @@ public final class KailleraGameImpl implements KailleraGame {
 
             int access = server.getAccessManager().getAccess(user.getSocketAddress().getAddress());
 
-            if (access == AccessManager.ACCESS_NORMAL && kickedUsers.contains(user.getID())) {
-                log.warn(user + " join game denied: previously kicked: " + this);
+            // Only elevated and admin clients are exempt from the rules below. A
+            // banned session is not: it loses the exemptions the moment the ban
+            // applies, not when the maintenance pass disconnects it.
+            if (access < AccessManager.ACCESS_NORMAL) {
+                DENIED_LOG.warn("{}: join game denied: Banned", user);
+                throw new JoinGameException(EmuLang.getString("KailleraServerImpl.DeniedBanned"));
+            }
+
+            if (access <= AccessManager.ACCESS_NORMAL && kickedUsers.contains(user.getID())) {
+                DENIED_LOG.warn("{}", user + " join game denied: previously kicked: " + this);
                 throw new JoinGameException(
                         EmuLang.getString("KailleraGameImpl.JoinGameDeniedPreviouslyKicked"));
             }
 
-            if (access == AccessManager.ACCESS_NORMAL
+            if (access <= AccessManager.ACCESS_NORMAL
                     && getStatus() != KailleraGame.STATUS_WAITING) {
-                log.warn(user + " join game denied: attempt to join game in progress: " + this);
+                DENIED_LOG.warn("{}",
+                        user + " join game denied: attempt to join game in progress: " + this);
                 throw new JoinGameException(
                         EmuLang.getString("KailleraGameImpl.JoinGameDeniedGameIsInProgress"));
             }
@@ -353,19 +404,19 @@ public final class KailleraGameImpl implements KailleraGame {
         writeLock.lock();
         try {
             if (!user.equals(getOwner())) {
-                log.warn(user + " start game denied: not the owner of " + this);
+                DENIED_LOG.warn("{}", user + " start game denied: not the owner of " + this);
                 throw new StartGameException(
                         EmuLang.getString("KailleraGameImpl.StartGameDeniedOnlyOwnerMayStart"));
             }
 
             if (status == KailleraGame.STATUS_SYNCHRONIZING) {
-                log.warn(user + " start game failed: " + this + " status is "
-                        + KailleraGame.STATUS_NAMES[status]);
+                DENIED_LOG.warn("{}", user + " start game failed: " + this + " status is "
+                        + KailleraGame.getStatusName(status));
                 throw new StartGameException(
                         EmuLang.getString("KailleraGameImpl.StartGameErrorSynchronizing"));
             } else if (status == KailleraGame.STATUS_PLAYING) {
-                log.warn(user + " start game failed: " + this + " status is "
-                        + KailleraGame.STATUS_NAMES[status]);
+                DENIED_LOG.warn("{}", user + " start game failed: " + this + " status is "
+                        + KailleraGame.getStatusName(status));
                 throw new StartGameException(
                         EmuLang.getString("KailleraGameImpl.StartGameErrorStatusIsPlaying"));
             }
@@ -376,16 +427,26 @@ public final class KailleraGameImpl implements KailleraGame {
             }
 
             int access = server.getAccessManager().getAccess(user.getSocketAddress().getAddress());
-            if (access == AccessManager.ACCESS_NORMAL && getNumPlayers() < 2
+
+            // Only elevated and admin clients are exempt from the rule below. A banned
+            // session is not: it loses the exemption the moment the ban applies, not
+            // when the maintenance pass disconnects it.
+            if (access < AccessManager.ACCESS_NORMAL) {
+                DENIED_LOG.warn("{}: start game denied: Banned", user);
+                throw new StartGameException(EmuLang.getString("KailleraServerImpl.DeniedBanned"));
+            }
+
+            if (access <= AccessManager.ACCESS_NORMAL && getNumPlayers() < 2
                     && !server.getAllowSinglePlayer()) {
-                log.warn(user + " start game denied: " + this + " needs at least 2 players");
+                DENIED_LOG.warn("{}",
+                        user + " start game denied: " + this + " needs at least 2 players");
                 throw new StartGameException(EmuLang
                         .getString("KailleraGameImpl.StartGameDeniedSinglePlayerNotAllowed"));
             }
 
             for (KailleraUser player : players) {
                 if (player.getConnectionType() != owner.getConnectionType()) {
-                    log.warn(user + " start game denied: " + this
+                    DENIED_LOG.warn("{}", user + " start game denied: " + this
                             + ": All players must use the same connection type");
                     addEvent(new GameInfoEvent(this, EmuLang.getString(
                             "KailleraGameImpl.StartGameConnectionTypeMismatchInfo",
@@ -395,7 +456,7 @@ public final class KailleraGameImpl implements KailleraGame {
                 }
 
                 if (!player.getClientType().equals(getClientType())) {
-                    log.warn(user + " start game denied: " + this
+                    DENIED_LOG.warn("{}", user + " start game denied: " + this
                             + ": All players must use the same emulator!");
                     addEvent(new GameInfoEvent(this, EmuLang.getString(
                             "KailleraGameImpl.StartGameEmulatorMismatchInfo", getClientType())));
@@ -439,14 +500,14 @@ public final class KailleraGameImpl implements KailleraGame {
         writeLock.lock();
         try {
             if (!players.contains(user)) {
-                log.warn(user + " ready game failed: not in " + this);
+                DENIED_LOG.warn("{}", user + " ready game failed: not in " + this);
                 throw new UserReadyException(
                         EmuLang.getString("KailleraGameImpl.ReadyGameErrorNotInGame"));
             }
 
             if (status != KailleraGame.STATUS_SYNCHRONIZING) {
-                log.warn(user + " ready failed: " + this + " status is "
-                        + KailleraGame.STATUS_NAMES[status]);
+                DENIED_LOG.warn("{}", user + " ready failed: " + this + " status is "
+                        + KailleraGame.getStatusName(status));
                 throw new UserReadyException(
                         EmuLang.getString("KailleraGameImpl.ReadyGameErrorIncorrectState"));
             }
@@ -484,7 +545,7 @@ public final class KailleraGameImpl implements KailleraGame {
         writeLock.lock();
         try {
             if (!players.contains(user)) {
-                log.warn(user + " drop game failed: not in " + this);
+                DENIED_LOG.warn("{}", user + " drop game failed: not in " + this);
                 throw new DropGameException(
                         EmuLang.getString("KailleraGameImpl.DropGameErrorNotInGame"));
             }
@@ -533,7 +594,7 @@ public final class KailleraGameImpl implements KailleraGame {
         writeLock.lock();
         try {
             if (!players.remove(user)) {
-                log.warn(user + " quit game failed: not in " + this);
+                DENIED_LOG.warn("{}", user + " quit game failed: not in " + this);
                 throw new QuitGameException(
                         EmuLang.getString("KailleraGameImpl.QuitGameErrorNotInGame"));
             }
@@ -556,7 +617,7 @@ public final class KailleraGameImpl implements KailleraGame {
         writeLock.lock();
         try {
             if (!user.equals(owner)) {
-                log.warn(user + " close game denied: not the owner of " + this);
+                DENIED_LOG.warn("{}", user + " close game denied: not the owner of " + this);
                 throw new CloseGameException(
                         EmuLang.getString("KailleraGameImpl.CloseGameErrorNotGameOwner"));
             }

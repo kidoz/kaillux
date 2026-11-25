@@ -122,7 +122,8 @@ public class LoginValidator {
                     EmuLang.getString("KailleraServerImpl.LoginDeniedUserNameTooLong"));
         }
 
-        if (access == AccessManager.ACCESS_NORMAL && containsIllegalCharacters(user.getName())) {
+        if (access == AccessManager.ACCESS_NORMAL
+                && InputValidator.hasIllegalCharacters(user.getName())) {
             log.info("{} login denied: Illegal characters in UserName", user);
             throw new UserNameException(
                     EmuLang.getString("KailleraServerImpl.LoginDeniedIllegalCharactersInUserName"));
@@ -149,7 +150,7 @@ public class LoginValidator {
             throws LoginException {
         if (userFromList.getStatus() != KailleraUser.STATUS_CONNECTING) {
             log.warn("{} login denied: Invalid status={}", user,
-                    KailleraUser.STATUS_NAMES[userFromList.getStatus()]);
+                    KailleraUser.getStatusName(userFromList.getStatus()));
             throw new LoginException(EmuLang.getString("KailleraServerImpl.LoginErrorInvalidStatus",
                     userFromList.getStatus()));
         }
@@ -216,31 +217,5 @@ public class LoginValidator {
         }
 
         return reconnectUser;
-    }
-
-    /**
-     * Checks if a string contains illegal characters (control chars, dangerous
-     * Unicode).
-     */
-    private boolean containsIllegalCharacters(String str) {
-        if (str == null || str.isEmpty()) {
-            return true;
-        }
-        for (int i = 0; i < str.length(); i++) {
-            char c = str.charAt(i);
-            if (c < 32 || c == 127 || Character.isISOControl(c)) {
-                return true;
-            }
-            // Unicode direction override characters
-            if (c == '\u202A' || c == '\u202B' || c == '\u202C' || c == '\u202D' || c == '\u202E'
-                    || c == '\u2066' || c == '\u2067' || c == '\u2068' || c == '\u2069') {
-                return true;
-            }
-            // Zero-width characters
-            if (c == '\u200B' || c == '\u200C' || c == '\u200D' || c == '\uFEFF') {
-                return true;
-            }
-        }
-        return false;
     }
 }

@@ -42,8 +42,22 @@ public interface KailleraGame {
     /** Game is synchronizing player starts. */
     byte STATUS_SYNCHRONIZING = 2;
 
-    /** Human-readable names for game status values. */
-    String[] STATUS_NAMES = {"Waiting", "Playing", "Synchronizing"};
+    /**
+     * Returns the name of a game status value as shown to administrators and in
+     * logs, or "Unknown(n)" for an invalid value.
+     *
+     * @param status
+     *            one of the STATUS_ constants
+     * @return the display name of the status
+     */
+    static String getStatusName(int status) {
+        return switch (status) {
+            case STATUS_WAITING -> "Waiting";
+            case STATUS_PLAYING -> "Playing";
+            case STATUS_SYNCHRONIZING -> "Synchronizing";
+            default -> "Unknown(" + status + ")";
+        };
+    }
 
     int getID();
 

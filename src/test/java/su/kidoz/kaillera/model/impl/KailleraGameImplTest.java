@@ -20,6 +20,7 @@ import su.kidoz.kaillera.model.KailleraGame;
 import su.kidoz.kaillera.model.KailleraUser;
 import su.kidoz.kaillera.model.event.DefaultEventDispatcher;
 import su.kidoz.kaillera.model.event.EventDispatcher;
+import su.kidoz.kaillera.model.exception.GameChatException;
 import su.kidoz.kaillera.model.exception.GameDataException;
 import su.kidoz.kaillera.model.exception.JoinGameException;
 import su.kidoz.kaillera.model.exception.StartGameException;
@@ -63,6 +64,110 @@ class KailleraGameImplTest {
 
         game = new KailleraGameImpl(1, "TestROM", owner, server, BUFFER_SIZE, TIMEOUT_MILLIS,
                 DESYNCH_TIMEOUTS);
+    }
+
+    @Nested
+    @DisplayName("Game chat")
+    class GameChat {
+
+        @Mock
+        private AccessManager accessManager;
+
+        @BeforeEach
+        void setUpRules() throws Exception {
+            when(server.getAccessManager()).thenReturn(accessManager);
+            when(accessManager.getAccess(any())).thenReturn(AccessManager.ACCESS_NORMAL);
+            when(server.getMaxChatLength()).thenReturn(150);
+            when(server.getChatFloodTime()).thenReturn(2);
+            game.join(owner);
+        }
+
+        @Test
+        @DisplayName("a message with control characters is refused")
+        void aMessageWithControlCharactersIsRefused() {
+            int queued = owner.getEventQueueSize();
+
+            // Game chat goes to every member and into the log; the lobby refuses
+            // these characters, and so must the game.
+            assertThrows(GameChatException.class, () -> game.chat(owner, "hi\nFORGED LOG LINE"));
+            assertThrows(GameChatException.class, () -> game.chat(owner, "zero\u200Bwidth"));
+            assertThrows(GameChatException.class, () -> game.chat(owner, "bidi\u202Eoverride"));
+
+            assertEquals(queued, owner.getEventQueueSize(), "nothing may be relayed");
+        }
+
+        @Test
+        @DisplayName("a printable message is relayed, and the next one at once is flood")
+        void aPrintableMessageIsRelayedAndTheNextAtOnceIsFlood() throws Exception {
+            int queued = owner.getEventQueueSize();
+
+            game.chat(owner, "hello team");
+
+            assertEquals(queued + 1, owner.getEventQueueSize());
+            assertThrows(GameChatException.class, () -> game.chat(owner, "again"),
+                    "the lobby flood interval applies to game chat too");
+        }
+
+        @Test
+        @DisplayName("the flood interval does not apply to a client the access rules exempt")
+        void theFloodIntervalDoesNotApplyToExemptClients() throws Exception {
+            when(accessManager.getAccess(any())).thenReturn(AccessManager.ACCESS_ADMIN);
+
+            game.chat(owner, "first");
+            game.chat(owner, "second");
+
+            assertEquals(3, owner.getEventQueueSize(), "the join event and both messages");
+        }
+    }
+
+    @Nested
+    @DisplayName("Banned sessions")
+    class BannedSessions {
+
+        @Mock
+        private AccessManager accessManager;
+
+        private KailleraUserImpl player;
+
+        @BeforeEach
+        void setUpRules() throws Exception {
+            when(server.getAccessManager()).thenReturn(accessManager);
+            when(accessManager.getAccess(any())).thenReturn(AccessManager.ACCESS_NORMAL);
+            when(server.getMaxChatLength()).thenReturn(150);
+            game.join(owner);
+
+            player = new KailleraUserImpl(2, "v086", new InetSocketAddress("127.0.0.1", 27889),
+                    eventDispatcher, server);
+            player.setName("GamePlayer");
+            player.setSocketAddress(new InetSocketAddress("127.0.0.1", 27889));
+        }
+
+        @Test
+        @DisplayName("a banned session is refused game chat at once")
+        void aBannedSessionIsRefusedGameChat() {
+            when(accessManager.getAccess(any())).thenReturn(AccessManager.ACCESS_BANNED);
+
+            // Only elevated and admin clients are exempt; a banned session is not.
+            assertThrows(GameChatException.class, () -> game.chat(owner, "hello"));
+        }
+
+        @Test
+        @DisplayName("a banned session is refused entry to a game at once")
+        void aBannedSessionIsRefusedEntryToAGame() {
+            when(accessManager.getAccess(any())).thenReturn(AccessManager.ACCESS_BANNED);
+
+            assertThrows(JoinGameException.class, () -> game.join(player));
+            assertEquals(1, game.getNumPlayers());
+        }
+
+        @Test
+        @DisplayName("a banned owner cannot start the game")
+        void aBannedOwnerCannotStartTheGame() {
+            when(accessManager.getAccess(any())).thenReturn(AccessManager.ACCESS_BANNED);
+
+            assertThrows(StartGameException.class, () -> game.start(owner));
+            assertEquals(KailleraGame.STATUS_WAITING, game.getStatus());
+        }
     }
 
     @Nested

@@ -1,10 +1,13 @@
 package su.kidoz.kaillera.model.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,12 +24,18 @@ import su.kidoz.config.ServerConfigs;
 import su.kidoz.config.ServerInfrastructure;
 import su.kidoz.kaillera.access.AccessManager;
 import su.kidoz.kaillera.master.StatsCollector;
+import su.kidoz.kaillera.metrics.GameMetricsCollector;
 import su.kidoz.kaillera.metrics.ServerMetrics;
 import su.kidoz.kaillera.service.ServerPolicyServices;
 import su.kidoz.kaillera.model.KailleraGame;
+import su.kidoz.kaillera.model.exception.ChatException;
+import su.kidoz.kaillera.model.exception.CreateGameException;
+import su.kidoz.kaillera.model.exception.FloodException;
+import su.kidoz.kaillera.model.exception.GameChatException;
 import su.kidoz.kaillera.model.KailleraServer;
 import su.kidoz.kaillera.model.KailleraUser;
 import su.kidoz.kaillera.model.event.DefaultEventDispatcher;
+import su.kidoz.kaillera.model.event.ChatEvent;
 import su.kidoz.kaillera.model.event.EventDispatcher;
 import su.kidoz.kaillera.model.event.KailleraEvent;
 import su.kidoz.kaillera.model.event.KailleraEventListener;
@@ -41,6 +50,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 /**
  * Concurrency tests for KailleraServerImpl.
  *
@@ -48,6 +59,12 @@ import org.junit.jupiter.api.Timeout;
  * Tests thread-safety of server operations under concurrent load.
  */
 class KailleraServerConcurrencyTest {
+
+    /** The access level every address has, until a test changes it. */
+    private final TestAccessManager accessManager = new TestAccessManager();
+
+    /** Create-game flood interval of the test server in seconds; 0 disables it. */
+    private volatile int createGameFloodSeconds = 0;
 
     private KailleraServerImpl server;
     private EmuLinkerExecutor executor;
@@ -63,7 +80,7 @@ class KailleraServerConcurrencyTest {
         MasterListConfig masterListConfig = createTestMasterListConfig();
 
         // Create dependencies for server
-        TestAccessManager accessManager = new TestAccessManager();
+        accessManager.accessLevel = AccessManager.ACCESS_NORMAL;
         LoginValidator loginValidator = new LoginValidator(accessManager, serverConfig);
         ChatModerationService chatModerationService = new ChatModerationService(accessManager,
                 serverConfig.getChatFloodTime(), serverConfig.getMaxChatLength());
@@ -77,7 +94,9 @@ class KailleraServerConcurrencyTest {
         ServerConfigs configs = new ServerConfigs(serverConfig, gameConfig, masterListConfig);
         ServerPolicyServices policyServices = new ServerPolicyServices(loginValidator,
                 chatModerationService, announcementService);
-        ServerMetrics metrics = new ServerMetrics(new TestStatsCollector(), null);
+        ServerMetrics metrics = new ServerMetrics(new TestStatsCollector(),
+                // createGame records a metric; without a collector it would fail.
+                new GameMetricsCollector(new SimpleMeterRegistry(), gameManager));
 
         server = new KailleraServerImpl(infrastructure, configs, policyServices, metrics,
                 new AutoFireDetectorFactoryImpl(), userManager, gameManager);
@@ -134,45 +153,37 @@ class KailleraServerConcurrencyTest {
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
     void gameIdsShouldBeUnique() throws Exception {
         int numGames = 50;
-        Set<Integer> gameIds = ConcurrentHashMap.newKeySet();
-        AtomicInteger duplicates = new AtomicInteger(0);
-        AtomicInteger loginCount = new AtomicInteger(0);
-
+        List<KailleraUser> users = new ArrayList<>();
         for (int i = 0; i < numGames; i++) {
-            final int clientId = i;
-            InetSocketAddress address = new InetSocketAddress("127.0.0.1", 10000 + clientId);
-            try {
-                KailleraUser user = server.newConnection(address, "v086", createTestDispatcher());
-                user.setName("User" + clientId);
-                user.setClientType("TestClient");
-                user.setConnectionType(KailleraUser.CONNECTION_TYPE_LAN);
-                user.setPing(10);
-                user.login();
-                loginCount.incrementAndGet();
-            } catch (Exception e) {
-                // Login may fail due to test configuration
-            }
+            users.add(logInUser(i));
         }
+        assertEquals(numGames, server.getNumUsers(), "every user must be logged in");
 
-        int actualUsers = server.getNumUsers();
-        CountDownLatch latch = new CountDownLatch(actualUsers);
+        Set<Integer> gameIds = ConcurrentHashMap.newKeySet();
+        AtomicInteger failures = new AtomicInteger();
+        // Releasing the threads together makes them contend for the game lock.
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(numGames);
 
-        for (KailleraUser user : server.getUsers()) {
+        for (KailleraUser user : users) {
             testExecutor.submit(() -> {
                 try {
-                    var game = user.createGame("TestROM.zip");
-                    if (!gameIds.add(game.getID())) {
-                        duplicates.incrementAndGet();
-                    }
-                } catch (Exception ignored) {
+                    start.await();
+                    KailleraGame game = user.createGame("TestROM" + user.getID() + ".zip");
+                    gameIds.add(game.getID());
+                } catch (Exception e) {
+                    failures.incrementAndGet();
                 } finally {
-                    latch.countDown();
+                    done.countDown();
                 }
             });
         }
 
-        assertTrue(latch.await(20, TimeUnit.SECONDS));
-        assertEquals(0, duplicates.get(), "Game IDs should be unique");
+        start.countDown();
+        assertTrue(done.await(20, TimeUnit.SECONDS));
+        assertEquals(0, failures.get(), "every createGame must succeed");
+        assertEquals(numGames, gameIds.size(), "Game IDs should be unique");
+        assertEquals(numGames, server.getNumGames(), "every game must be registered");
     }
 
     @Test
@@ -204,60 +215,150 @@ class KailleraServerConcurrencyTest {
 
     @Test
     @Timeout(value = 30, unit = TimeUnit.SECONDS)
-    void shouldHandleConcurrentChatSafely() throws Exception {
+    void everyUserReceivesEveryChatUnderConcurrentSenders() throws Exception {
         int numUsers = 20;
         int messagesPerUser = 10;
+        int expectedChats = numUsers * messagesPerUser;
 
+        List<CountingListener> listeners = new ArrayList<>();
+        List<KailleraUser> users = new ArrayList<>();
         for (int i = 0; i < numUsers; i++) {
-            InetSocketAddress address = new InetSocketAddress("127.0.0.1", 10000 + i);
-            try {
-                KailleraUser user = server.newConnection(address, "v086", createTestDispatcher());
-                user.setName("User" + i);
-                user.setClientType("TestClient");
-                user.setConnectionType(KailleraUser.CONNECTION_TYPE_LAN);
-                user.setPing(10);
-                user.login();
-            } catch (Exception e) {
-                // Login may fail due to test configuration
-            }
+            CountingListener listener = new CountingListener();
+            listeners.add(listener);
+            users.add(logInUser(i, listener));
+        }
+        assertEquals(numUsers, server.getNumUsers(), "every user must be logged in");
+
+        // Each user thread drains its own event queue and counts the chat events.
+        for (KailleraUser user : users) {
+            testExecutor.execute((KailleraUserImpl) user);
         }
 
-        int actualUsers = server.getNumUsers();
-        CountDownLatch chatLatch = new CountDownLatch(actualUsers * messagesPerUser);
-
-        for (KailleraUser user : server.getUsers()) {
+        CountDownLatch done = new CountDownLatch(numUsers);
+        AtomicInteger rejectedChats = new AtomicInteger();
+        for (KailleraUser user : users) {
             testExecutor.submit(() -> {
-                for (int j = 0; j < messagesPerUser; j++) {
-                    try {
+                try {
+                    for (int j = 0; j < messagesPerUser; j++) {
                         user.chat("Message " + j);
-                    } catch (Exception e) {
-                        // Expected - user may not be fully logged in
-                    } finally {
-                        chatLatch.countDown();
                     }
+                } catch (Exception e) {
+                    rejectedChats.incrementAndGet();
+                } finally {
+                    done.countDown();
                 }
             });
         }
 
-        if (actualUsers > 0) {
-            assertTrue(chatLatch.await(20, TimeUnit.SECONDS));
-            // The test passes if we don't get ConcurrentModificationException
-            // Login/chat failures are expected in this test setup
+        assertTrue(done.await(20, TimeUnit.SECONDS), "every sender must finish");
+        assertEquals(0, rejectedChats.get(), "every chat must be accepted");
+
+        long deadline = System.currentTimeMillis() + 10_000;
+        for (CountingListener listener : listeners) {
+            while (listener.chats.get() < expectedChats && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10);
+            }
         }
-        // Test passes - we verified concurrent access doesn't crash
+        for (CountingListener listener : listeners) {
+            assertEquals(expectedChats, listener.chats.get(),
+                    "each user must receive every chat message exactly once");
+        }
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void aNormalUserCanCreateGamesWhileFloodControlIsOn() throws Exception {
+        createGameFloodSeconds = 1;
+        KailleraUser user = logInUser(0);
+
+        // The flood check compares with the previous attempt, so the first attempt
+        // must go through. Writing the timestamp before that check denied it.
+        KailleraGame first = user.createGame("FirstROM");
+        assertEquals(KailleraGame.STATUS_WAITING, first.getStatus());
+
+        user.quitGame();
+
+        // Every attempt starts a new interval, so a retry at once is flood.
+        assertThrows(FloodException.class, () -> user.createGame("SecondROM"));
+
+        Thread.sleep(1100);
+        KailleraGame second = user.createGame("SecondROM");
+        assertNotEquals(first.getID(), second.getID(), "a new game must be created");
+    }
+
+    @Test
+    void aBannedSessionIsRefusedInsteadOfExempt() throws Exception {
+        KailleraUser user = logInUser(0);
+        user.createGame("BannedROM");
+
+        // The ban applies at once; no maintenance pass has disconnected the user yet.
+        accessManager.accessLevel = AccessManager.ACCESS_BANNED;
+
+        // These paths used to exempt everything that was not ACCESS_NORMAL, which
+        // left a banned session as free of the rules as an admin.
+        assertThrows(ChatException.class, () -> user.chat("hello"));
+        assertThrows(GameChatException.class, () -> user.gameChat("hello", 1));
+
+        user.quitGame();
+        assertThrows(CreateGameException.class, () -> user.createGame("AnotherROM"));
     }
 
     // Helper classes
 
+    /**
+     * Opens a session and completes its login, so that the user is logged in.
+     *
+     * @param id
+     *            chooses the user's name and port
+     * @return the logged-in user
+     */
+    private KailleraUser logInUser(int id) throws Exception {
+        return logInUser(id, new NoOpListener());
+    }
+
+    private KailleraUser logInUser(int id, KailleraEventListener listener) throws Exception {
+        InetSocketAddress address = new InetSocketAddress("127.0.0.1", 10000 + id);
+        KailleraUser user = server.newConnection(address, "v086", createTestDispatcher(listener));
+        // The login validators compare the address the client logs in from with the
+        // address it handshook from.
+        user.setSocketAddress(address);
+        user.setName("User" + id);
+        user.setClientType("TestClient");
+        user.setConnectionType(KailleraUser.CONNECTION_TYPE_LAN);
+        user.setPing(10);
+        user.login();
+        return user;
+    }
+
     private static EventDispatcher createTestDispatcher() {
+        return createTestDispatcher(new NoOpListener());
+    }
+
+    private static EventDispatcher createTestDispatcher(KailleraEventListener listener) {
         EventDispatcher dispatcher = new DefaultEventDispatcher();
-        dispatcher.setListener(new NoOpListener());
+        dispatcher.setListener(listener);
         return dispatcher;
     }
 
     private static final class NoOpListener implements KailleraEventListener {
         @Override
         public void actionPerformed(KailleraEvent event) {
+        }
+
+        @Override
+        public void stop() {
+        }
+    }
+
+    /** Counts the chat events one user is given. */
+    private static final class CountingListener implements KailleraEventListener {
+        private final AtomicInteger chats = new AtomicInteger();
+
+        @Override
+        public void actionPerformed(KailleraEvent event) {
+            if (event instanceof ChatEvent) {
+                chats.incrementAndGet();
+            }
         }
 
         @Override
@@ -299,7 +400,7 @@ class KailleraServerConcurrencyTest {
 
             @Override
             public int getCreateGameFloodTime() {
-                return 0;
+                return createGameFloodSeconds;
             }
 
             @Override
@@ -370,7 +471,10 @@ class KailleraServerConcurrencyTest {
         return config;
     }
 
-    private static final class TestAccessManager implements AccessManager {
+    /** Answers every address with the same access level. */
+    private final class TestAccessManager implements AccessManager {
+        private volatile int accessLevel = ACCESS_NORMAL;
+
         @Override
         public boolean isAddressAllowed(InetAddress address) {
             return true;
@@ -393,7 +497,7 @@ class KailleraServerConcurrencyTest {
 
         @Override
         public int getAccess(InetAddress address) {
-            return ACCESS_NORMAL;
+            return accessLevel;
         }
 
         @Override

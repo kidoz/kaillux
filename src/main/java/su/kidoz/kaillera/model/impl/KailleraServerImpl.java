@@ -40,6 +40,7 @@ import su.kidoz.release.ReleaseInfo;
 import su.kidoz.util.EmuLang;
 import su.kidoz.util.EmuLinkerExecutor;
 import su.kidoz.util.EmuUtil;
+import su.kidoz.util.ThrottledLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
@@ -49,6 +50,7 @@ import su.kidoz.kaillera.metrics.GameMetricsCollector;
 import su.kidoz.kaillera.metrics.ServerMetrics;
 import su.kidoz.kaillera.model.LoginNotificationState;
 import su.kidoz.kaillera.model.validation.LoginValidator;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.kaillera.service.AnnouncementService;
 import su.kidoz.kaillera.service.ChatModerationService;
 import su.kidoz.kaillera.service.ServerPolicyServices;
@@ -72,6 +74,10 @@ import su.kidoz.config.ServerInfrastructure;
  */
 public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecycle {
     private static final Logger log = LoggerFactory.getLogger(KailleraServerImpl.class);
+    // A session can send a refused request at packet rate, so this must stay
+    // bounded.
+    private static final ThrottledLogger DENIED_LOG = new ThrottledLogger(log,
+            "denied request to the server");
 
     // Configuration objects - access values via getters instead of copying
     private final ServerConfig serverConfig;
@@ -357,10 +363,12 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
         KailleraUserImpl userImpl = (KailleraUserImpl) user;
 
         long loginDelay = (System.currentTimeMillis() - user.getConnectTime());
+        // The name and client type are still untrusted here: validation runs below.
         log.info(user + ": login request: delay=" + loginDelay + "ms, clientAddress="
-                + EmuUtil.formatSocketAddress(user.getSocketAddress()) + ", name=" + user.getName()
-                + ", ping=" + user.getPing() + ", client=" + user.getClientType() + ", connection="
-                + KailleraUser.getConnectionTypeName(user.getConnectionType()));
+                + EmuUtil.formatSocketAddress(user.getSocketAddress()) + ", name="
+                + InputValidator.sanitizeForLog(user.getName()) + ", ping=" + user.getPing()
+                + ", client=" + InputValidator.sanitizeForLog(user.getClientType())
+                + ", connection=" + KailleraUser.getConnectionTypeName(user.getConnectionType()));
 
         int userID = user.getID();
 
@@ -478,6 +486,10 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
 
             String quitMsg = message.trim();
             int maxLen = serverConfig.getMaxQuitMessageLength();
+            // The quit message is broadcast to everyone and written to the log, so it
+            // must be printable whatever the user's access level.
+            if (InputValidator.hasIllegalCharacters(quitMsg))
+                quitMsg = "";
             if (quitMsg.isEmpty() || (maxLen > 0 && quitMsg.length() > maxLen))
                 quitMsg = EmuLang.getString("KailleraServerImpl.StandardQuitMessage");
 
@@ -500,19 +512,23 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
             return;
         }
 
-        log.info(user + " chat: " + validatedMessage);
+        log.info(user + " chat: " + InputValidator.sanitizeForLog(validatedMessage));
         addEvent(new ChatEvent(this, user, validatedMessage));
+    }
+
+    public int getChatFloodTime() {
+        return serverConfig.getChatFloodTime();
     }
 
     public KailleraGame createGame(KailleraUser user, String romName)
             throws CreateGameException, FloodException {
         if (!user.isLoggedIn()) {
-            log.error(user + " create game failed: Not logged in");
+            log.debug(user + " create game failed: Not logged in");
             throw new CreateGameException(EmuLang.getString("KailleraServerImpl.NotLoggedIn"));
         }
 
         if (((KailleraUserImpl) user).getGame() != null) {
-            log.error(user + " create game failed: already in game: "
+            log.debug(user + " create game failed: already in game: "
                     + ((KailleraUserImpl) user).getGame());
             throw new CreateGameException(
                     EmuLang.getString("KailleraServerImpl.CreateGameErrorAlreadyInGame"));
@@ -522,15 +538,25 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
         int floodTime = serverConfig.getCreateGameFloodTime();
         int maxNameLen = serverConfig.getMaxGameNameLength();
 
-        if (access == AccessManager.ACCESS_NORMAL) {
+        // Only elevated and admin clients are exempt from the rules below. A banned
+        // session is not: it loses the exemptions the moment the ban applies, not
+        // when the maintenance pass gets around to disconnecting it.
+        if (access < AccessManager.ACCESS_NORMAL) {
+            DENIED_LOG.warn("{}: create game denied: Banned", user);
+            throw new CreateGameException(EmuLang.getString("KailleraServerImpl.DeniedBanned"));
+        }
+
+        if (access <= AccessManager.ACCESS_NORMAL) {
             if (floodTime > 0 && (System.currentTimeMillis()
                     - ((KailleraUserImpl) user).getLastCreateGameTime()) < (floodTime * 1000)) {
-                log.warn(user + " create game denied: Flood: " + romName);
+                // Reached once per packet by a client that keeps retrying.
+                log.debug(user + " create game denied: Flood: "
+                        + InputValidator.sanitizeForLog(romName));
                 throw new FloodException(
                         EmuLang.getString("KailleraServerImpl.CreateGameDeniedFloodControl"));
             }
 
-            if (containsIllegalCharacters(romName)) {
+            if (InputValidator.hasIllegalCharacters(romName)) {
                 log.warn(user + " create game denied: Illegal characters in ROM name");
                 throw new CreateGameException(
                         EmuLang.getString("KailleraServerImpl.CreateGameDeniedIllegalCharacters"));
@@ -549,7 +575,8 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
             }
 
             if (!accessManager.isGameAllowed(romName)) {
-                log.warn(user + " create game denied: AccessManager denied game: " + romName);
+                log.warn(user + " create game denied: AccessManager denied game: "
+                        + InputValidator.sanitizeForLog(romName));
                 throw new CreateGameException(
                         EmuLang.getString("KailleraServerImpl.CreateGameDeniedGameBanned"));
             }
@@ -559,7 +586,7 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
         try {
             // Re-check max games inside lock to ensure atomicity
             int maxGames = serverConfig.getMaxGames();
-            if (access == AccessManager.ACCESS_NORMAL && maxGames > 0
+            if (access <= AccessManager.ACCESS_NORMAL && maxGames > 0
                     && getNumGames() >= maxGames) {
                 log.warn(user + " create game denied: Over maximum of " + maxGames
                         + " current games!");
@@ -604,7 +631,7 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
 
     void closeGame(KailleraGame game, KailleraUser user) throws CloseGameException {
         if (!user.isLoggedIn()) {
-            log.error(user + " close " + game + " failed: Not logged in");
+            log.debug(user + " close " + game + " failed: Not logged in");
             throw new CloseGameException(EmuLang.getString("KailleraServerImpl.NotLoggedIn"));
         }
 
@@ -695,36 +722,5 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
         } catch (Exception e) {
             log.error("Error forcing " + request.user() + " quit: " + request.message(), e);
         }
-    }
-
-    /**
-     * Checks if a string contains illegal characters (control chars, dangerous
-     * Unicode).
-     *
-     * @param str
-     *            the string to check
-     * @return true if null, empty, or illegal characters are found
-     */
-    private boolean containsIllegalCharacters(String str) {
-        if (str == null || str.isEmpty()) {
-            return true; // Null/empty strings are invalid
-        }
-        for (int i = 0; i < str.length(); i++) {
-            char c = str.charAt(i);
-            // Check for control characters (< 32), DEL (127), and other ISO control chars
-            if (c < 32 || c == 127 || Character.isISOControl(c)) {
-                return true;
-            }
-            // Check for Unicode direction override characters (potential spoofing)
-            if (c == '\u202A' || c == '\u202B' || c == '\u202C' || c == '\u202D' || c == '\u202E'
-                    || c == '\u2066' || c == '\u2067' || c == '\u2068' || c == '\u2069') {
-                return true;
-            }
-            // Check for zero-width characters (potential spoofing)
-            if (c == '\u200B' || c == '\u200C' || c == '\u200D' || c == '\uFEFF') {
-                return true;
-            }
-        }
-        return false;
     }
 }

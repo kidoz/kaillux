@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 import java.net.InetSocketAddress;
+import su.kidoz.kaillera.model.KailleraUser;
 import su.kidoz.kaillera.model.event.DefaultEventDispatcher;
 import su.kidoz.kaillera.model.event.EventDispatcher;
 import su.kidoz.kaillera.model.event.KailleraEvent;
@@ -146,17 +147,60 @@ class KailleraUserImplTest {
         }
 
         @Test
-        @DisplayName("addEvent should gracefully handle queue overflow")
-        void addEventShouldHandleQueueOverflow() {
-            // The queue is bounded to 1000 events
-            // Adding more than 1000 should not throw, just log warnings
+        @DisplayName("addEvent should count the events that do not fit")
+        void addEventShouldCountTheEventsThatDoNotFit() {
+            // The queue holds 2000 events, and nothing drains it in this test.
+            int capacity = 2000;
             KailleraEvent event = mock(KailleraEvent.class);
 
-            // Add more events than the queue can hold
-            for (int i = 0; i < 1100; i++) {
-                assertDoesNotThrow(() -> user.addEvent(event),
-                        "addEvent should not throw even when queue is full");
+            for (int i = 0; i < capacity + 100; i++) {
+                user.addEvent(event);
             }
+
+            assertEquals(capacity, user.getEventQueueSize(), "the queue must be bounded");
+            assertEquals(100, user.getDroppedEventsCount(),
+                    "every event beyond the capacity must be counted as dropped");
+        }
+    }
+
+    @Nested
+    @DisplayName("State before login")
+    class StateBeforeLogin {
+
+        @Test
+        @DisplayName("dropGame should leave a connecting user in the connecting state")
+        void dropGameShouldLeaveAConnectingUserConnecting() throws Exception {
+            // newConnection() moves a session to CONNECTING; the constructor leaves it
+            // at the field default.
+            user.setStatus(KailleraUser.STATUS_CONNECTING);
+
+            user.dropGame();
+
+            assertEquals(KailleraUser.STATUS_CONNECTING, user.getStatus(),
+                    "only a player may leave the playing state");
+        }
+
+        @Test
+        @DisplayName("hasStartedLogin should turn true with the first UserInformation")
+        void hasStartedLoginShouldTurnTrueWithUserInformation() {
+            assertFalse(user.hasStartedLogin());
+
+            user.setName("Player");
+
+            assertTrue(user.hasStartedLogin());
+        }
+
+        @Test
+        @DisplayName("the log form of the user should not contain control characters")
+        void theLogFormShouldNotContainControlCharacters() {
+            user.setName("Al\u200Bice\nFORGED LOG LINE");
+
+            String logForm = user.toString();
+            assertFalse(logForm.contains("\n"), "a name must not split a log line");
+            assertFalse(logForm.contains("\u200B"), "invisible characters must be removed");
+            assertTrue(logForm.contains("Alice"));
+            assertEquals("Al\u200Bice\nFORGED LOG LINE", user.getName(),
+                    "the name itself is left for the login validator to judge");
         }
     }
 
