@@ -22,6 +22,7 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.www.BasicAuthenticationFilter;
 
 @Configuration
 @EnableWebSecurity
@@ -116,6 +117,20 @@ public class SecurityConfig {
         return sb.toString();
     }
 
+    /**
+     * Content Security Policy sent with every response.
+     *
+     * <p>
+     * The admin origin also serves the public Swagger UI, and the dashboard keeps
+     * the credential where any script on the origin could read it, so scripts may
+     * only come from the server itself. Styles allow inline because Swagger UI sets
+     * them that way.
+     */
+    static final String CONTENT_SECURITY_POLICY = "default-src 'self'; script-src 'self'; "
+            + "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; "
+            + "connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; "
+            + "frame-ancestors 'none'";
+
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         // CSRF is disabled because this is a stateless REST API using HTTP Basic auth.
@@ -134,6 +149,11 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/**").authenticated()
                         // Static resources and other endpoints are public
                         .anyRequest().permitAll())
+                .headers(headers -> headers.contentSecurityPolicy(
+                        csp -> csp.policyDirectives(CONTENT_SECURITY_POLICY)))
+                // Each attempt at the password costs a BCrypt hash, so an address that
+                // keeps failing is refused before it reaches authentication.
+                .addFilterBefore(new AuthFailureLimiter(), BasicAuthenticationFilter.class)
                 // Return 401 without WWW-Authenticate. A Basic challenge makes
                 // the browser show its own login dialog and leaves fetch()
                 // waiting, so the admin page cannot report a rejected password.
