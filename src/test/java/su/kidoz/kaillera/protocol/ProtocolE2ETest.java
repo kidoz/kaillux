@@ -9,6 +9,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.net.InetAddress;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 import su.kidoz.config.ControllersConfig;
 import su.kidoz.config.GameConfig;
@@ -61,12 +62,22 @@ import su.kidoz.kaillera.controller.v086.command.StartGameCommandAction;
 import su.kidoz.kaillera.controller.v086.event.StartGameEventRenderer;
 import su.kidoz.kaillera.controller.v086.command.UserReadyCommandAction;
 import su.kidoz.kaillera.controller.v086.event.UserReadyEventRenderer;
+import su.kidoz.kaillera.controller.v086.protocol.CachedGameData;
+import su.kidoz.kaillera.controller.v086.protocol.CreateGame_Request;
+import su.kidoz.kaillera.controller.v086.protocol.GameChat_Request;
+import su.kidoz.kaillera.controller.v086.protocol.GameData;
+import su.kidoz.kaillera.controller.v086.protocol.JoinGame_Request;
+import su.kidoz.kaillera.controller.v086.protocol.KeepAlive;
+import su.kidoz.kaillera.controller.v086.protocol.PlayerDrop_Request;
+import su.kidoz.kaillera.controller.v086.protocol.UserInformation;
+import su.kidoz.kaillera.controller.v086.protocol.Chat_Request;
 import su.kidoz.kaillera.load.UdpKailleraClient;
 import su.kidoz.kaillera.master.StatsCollector;
 import su.kidoz.kaillera.model.KailleraGame;
 import su.kidoz.kaillera.model.KailleraServer;
 import su.kidoz.kaillera.model.impl.AutoFireDetectorFactoryImpl;
 import su.kidoz.kaillera.model.impl.KailleraServerImpl;
+import su.kidoz.kaillera.model.impl.KailleraUserImpl;
 import su.kidoz.kaillera.release.KailleraServerReleaseInfo;
 
 import su.kidoz.kaillera.model.impl.GameManager;
@@ -94,6 +105,9 @@ import org.slf4j.LoggerFactory;
 class ProtocolE2ETest {
 
     private static final Logger log = LoggerFactory.getLogger(ProtocolE2ETest.class);
+
+    // The test server binds loopback only, so nothing on the network can reach it.
+    private static final String HOST = "127.0.0.1";
 
     private static final int TEST_PORT = 27788; // Use non-standard port to avoid conflicts
     private static final long TIMEOUT_MS = 5000;
@@ -176,7 +190,7 @@ class ProtocolE2ETest {
     @Timeout(30)
     @DisplayName("Should complete HELLO handshake and receive assigned port")
     void shouldCompleteHelloHandshake() throws Exception {
-        UdpKailleraClient client = new UdpKailleraClient("localhost", TEST_PORT, "E2ETestUser1");
+        UdpKailleraClient client = new UdpKailleraClient(HOST, TEST_PORT, "E2ETestUser1");
 
         try {
             boolean connected = client.connect(TIMEOUT_MS);
@@ -195,7 +209,7 @@ class ProtocolE2ETest {
     @Timeout(30)
     @DisplayName("Should complete full login flow")
     void shouldCompleteLoginFlow() throws Exception {
-        UdpKailleraClient client = new UdpKailleraClient("localhost", TEST_PORT, "E2ETestUser2");
+        UdpKailleraClient client = new UdpKailleraClient(HOST, TEST_PORT, "E2ETestUser2");
 
         try {
             // Connect
@@ -220,7 +234,7 @@ class ProtocolE2ETest {
     @Timeout(30)
     @DisplayName("Should send and receive chat messages")
     void shouldSendChatMessages() throws Exception {
-        UdpKailleraClient client = new UdpKailleraClient("localhost", TEST_PORT, "E2EChatUser");
+        UdpKailleraClient client = new UdpKailleraClient(HOST, TEST_PORT, "E2EChatUser");
 
         try {
             // Connect and login
@@ -243,7 +257,7 @@ class ProtocolE2ETest {
     @Timeout(30)
     @DisplayName("Should quit gracefully")
     void shouldQuitGracefully() throws Exception {
-        UdpKailleraClient client = new UdpKailleraClient("localhost", TEST_PORT, "E2EQuitUser");
+        UdpKailleraClient client = new UdpKailleraClient(HOST, TEST_PORT, "E2EQuitUser");
 
         try {
             // Connect and login
@@ -276,7 +290,7 @@ class ProtocolE2ETest {
         try {
             // Connect all clients
             for (int i = 0; i < numClients; i++) {
-                clients[i] = new UdpKailleraClient("localhost", TEST_PORT, "E2EMultiUser" + i);
+                clients[i] = new UdpKailleraClient(HOST, TEST_PORT, "E2EMultiUser" + i);
                 assertTrue(clients[i].connect(TIMEOUT_MS), "Client " + i + " should connect");
                 assertTrue(clients[i].login(TIMEOUT_MS), "Client " + i + " should login");
 
@@ -357,8 +371,8 @@ class ProtocolE2ETest {
     @Timeout(60)
     @DisplayName("Should play a complete two-player game over UDP")
     void shouldPlayCompleteGameOverUdp() throws Exception {
-        UdpKailleraClient owner = new UdpKailleraClient("localhost", TEST_PORT, "E2EGameOwner");
-        UdpKailleraClient player = new UdpKailleraClient("localhost", TEST_PORT, "E2EGamePlayer");
+        UdpKailleraClient owner = new UdpKailleraClient(HOST, TEST_PORT, "E2EGameOwner");
+        UdpKailleraClient player = new UdpKailleraClient(HOST, TEST_PORT, "E2EGamePlayer");
 
         try {
             assertTrue(owner.connect(TIMEOUT_MS), "Owner should connect");
@@ -447,8 +461,8 @@ class ProtocolE2ETest {
     @Timeout(60)
     @DisplayName("Should kick a player from a game over UDP")
     void shouldKickPlayerOverUdp() throws Exception {
-        UdpKailleraClient owner = new UdpKailleraClient("localhost", TEST_PORT, "E2EKickOwner");
-        UdpKailleraClient player = new UdpKailleraClient("localhost", TEST_PORT, "E2EKickPlayer");
+        UdpKailleraClient owner = new UdpKailleraClient(HOST, TEST_PORT, "E2EKickOwner");
+        UdpKailleraClient player = new UdpKailleraClient(HOST, TEST_PORT, "E2EKickPlayer");
 
         try {
             assertTrue(owner.connect(TIMEOUT_MS), "Owner should connect");
@@ -484,6 +498,151 @@ class ProtocolE2ETest {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (server.getNumUsers() != expected && System.currentTimeMillis() < deadline) {
             Thread.sleep(50);
+        }
+    }
+
+    /**
+     * Waits until a condition on data that a client received holds, and fails if it
+     * never does. The client only reads its socket while it is being pumped, so
+     * this drives that too.
+     *
+     * @param receiving
+     *            the client whose received data the condition looks at
+     * @param condition
+     *            the condition to wait for
+     * @param message
+     *            the failure message
+     */
+    private static void waitFor(UdpKailleraClient receiving, BooleanSupplier condition,
+            String message) throws Exception {
+        long deadline = System.currentTimeMillis() + TIMEOUT_MS;
+        while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
+            // Reading is non-blocking, so wait a moment when nothing arrived.
+            if (!receiving.receiveAndProcess()) {
+                Thread.sleep(5);
+            }
+        }
+        assertTrue(condition.getAsBoolean(), message);
+    }
+
+    private static UdpKailleraClient loggedInClient(String name) throws Exception {
+        UdpKailleraClient client = new UdpKailleraClient(HOST, TEST_PORT, name);
+        assertTrue(client.connect(TIMEOUT_MS), name + " should connect");
+        assertTrue(client.login(TIMEOUT_MS), name + " should log in");
+        return client;
+    }
+
+    @Test
+    @Timeout(30)
+    @DisplayName("Commands sent before login are ignored and the login still works")
+    void commandsSentBeforeLoginAreIgnored() throws Exception {
+        try (UdpKailleraClient observer = loggedInClient("E2EPreLoginObserver");
+                UdpKailleraClient late = new UdpKailleraClient(HOST, TEST_PORT,
+                        "E2EPreLoginUser")) {
+            // This session has completed the HELLO handshake and nothing else.
+            assertTrue(late.connect(TIMEOUT_MS));
+
+            late.sendMessages(new Chat_Request(late.nextMessageNumber(), "hello before login"));
+            late.sendMessages(new CreateGame_Request(late.nextMessageNumber(), "PreLoginRom"));
+            late.sendMessages(new JoinGame_Request(late.nextMessageNumber(), 0, (byte) 1));
+            late.sendMessages(new GameData(late.nextMessageNumber(), new byte[]{1, 2, 3}));
+            late.sendMessages(new CachedGameData(late.nextMessageNumber(), 200));
+            late.sendMessages(new GameChat_Request(late.nextMessageNumber(), "in-game hello"));
+            late.sendMessages(new KeepAlive(late.nextMessageNumber()));
+            // PlayerDrop used to move a connecting session to IDLE, after which its
+            // own login was refused with "Invalid Login Status".
+            late.sendMessages(new PlayerDrop_Request(late.nextMessageNumber()));
+            Thread.sleep(500);
+
+            assertEquals(0, server.getNumGames(), "no game may be created before login");
+            assertEquals(-1, late.getCreatedGameId());
+            assertTrue(observer.getLobbyChatMessages().isEmpty(),
+                    "nothing may be broadcast for a client that is not logged in");
+
+            assertTrue(late.login(TIMEOUT_MS), "the login must still succeed");
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    @DisplayName("UserInformation sent after login is ignored")
+    void userInformationSentAfterLoginIsIgnored() throws Exception {
+        String name = "E2ERenameUser";
+        try (UdpKailleraClient observer = loggedInClient("E2ERenameObserver");
+                UdpKailleraClient user = loggedInClient(name)) {
+            // A logged-in client must not be able to replace its identity: that
+            // would skip every name check that the login made.
+            user.sendMessages(new UserInformation(user.nextMessageNumber(),
+                    "Someone\u200BElse\nFORGED LOG LINE " + "X".repeat(60), "OtherClient",
+                    (byte) 6));
+            user.chat("still the same user");
+
+            waitFor(observer, () -> !observer.getLobbyChatMessages().isEmpty(),
+                    "the chat must reach the other client");
+            assertEquals(List.of(name + ": still the same user"), observer.getLobbyChatMessages());
+
+            for (KailleraUserImpl serverUser : server.getUsers()) {
+                assertFalse(serverUser.getName().startsWith("Someone"),
+                        "the name must not be replaced");
+            }
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    @DisplayName("A quit message with control characters is replaced by the standard one")
+    void quitMessageWithControlCharactersIsReplaced() throws Exception {
+        try (UdpKailleraClient observer = loggedInClient("E2EQuitObserver");
+                UdpKailleraClient quitter = loggedInClient("E2EQuitter")) {
+            quitter.quit("bye\nFORGED LOG LINE");
+
+            waitFor(observer, () -> !observer.getQuitNotifications().isEmpty(),
+                    "the other clients must learn that the user left");
+            // The message goes to every client and into the log, so a line break
+            // in it would forge a log entry.
+            assertEquals(List.of("E2EQuitter: Normal Client Exit"),
+                    observer.getQuitNotifications());
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    @DisplayName("Long non-ASCII chat and a retransmission do not drop another client")
+    void nonAsciiChatAndRetransmissionDoNotDropAnotherClient() throws Exception {
+        String cjk = "\u4e2d";
+        String speakerName = cjk.repeat(10);
+        String longMessage = cjk.repeat(120);
+        try (UdpKailleraClient victim = loggedInClient("E2EVictim");
+                UdpKailleraClient speaker = loggedInClient(speakerName)) {
+            victim.chat("victim is here");
+            waitFor(victim, () -> victim.getLobbyChatMessages().stream()
+                    .anyMatch(s -> s.endsWith("victim is here")), "the victim's own chat");
+
+            // Five long messages fill the server's per-client resend window.
+            for (int i = 0; i < 5; i++) {
+                speaker.chat(longMessage);
+                Thread.sleep(100);
+            }
+            waitFor(victim,
+                    () -> victim.getLobbyChatMessages().stream()
+                            .filter(s -> s.endsWith(longMessage)).count() >= 5,
+                    "every non-ASCII chat must arrive intact");
+
+            // A datagram that carries only an old message number looks like a
+            // retransmission; the server answers by resending its last messages.
+            // Budgeting those in characters instead of bytes used to overflow the
+            // output buffer, and the exception ended this client's connection.
+            victim.sendMessages(new KeepAlive(0));
+            Thread.sleep(1100); // resends are throttled by maxPing, 1000 ms here
+            victim.receiveAndProcess();
+            victim.sendMessages(new KeepAlive(0));
+            Thread.sleep(300);
+
+            victim.chat("victim still alive");
+            waitFor(victim,
+                    () -> victim.getLobbyChatMessages().stream()
+                            .anyMatch(s -> s.endsWith("victim still alive")),
+                    "the victim must still receive its own chat after the resend");
         }
     }
 
@@ -523,7 +682,8 @@ class ProtocolE2ETest {
 
             @Override
             public int getCreateGameFloodTime() {
-                return 0;
+                // The shipped default: creating a game must work with it on.
+                return 2;
             }
 
             @Override
@@ -604,10 +764,13 @@ class ProtocolE2ETest {
 
         ControllersConfig.V086 v086Config = new ControllersConfig.V086();
         v086Config.setPortRangeStart(TEST_PORT + 1);
-        v086Config.setBufferSize(4096);
+        // The production buffer size, so that bundles are limited as in production.
+        v086Config.setBufferSize(2048);
         config.setV086(v086Config);
 
-        config.setBindAddresses(List.of("0.0.0.0"));
+        // Loopback only: the test server has no access rules, so it must not
+        // listen on interfaces that other hosts can reach.
+        config.setBindAddresses(List.of(HOST));
 
         return config;
     }

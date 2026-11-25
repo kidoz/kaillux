@@ -16,6 +16,7 @@ import su.kidoz.kaillera.controller.v086.protocol.V086Message;
 import su.kidoz.kaillera.model.exception.CloseGameException;
 import su.kidoz.kaillera.model.exception.DropGameException;
 import su.kidoz.kaillera.model.exception.QuitGameException;
+import su.kidoz.kaillera.model.KailleraUser;
 
 /**
  * Command handler for inbound quit game requests from clients.
@@ -49,8 +50,11 @@ public final class QuitGameCommandAction implements V086Action {
 
         actionCount.incrementAndGet();
 
+        KailleraUser user = clientHandler.getUser();
+        boolean leavingGame = user.getGame() != null;
+
         try {
-            clientHandler.getUser().quitGame();
+            user.quitGame();
         } catch (DropGameException e) {
             log.debug("Failed to drop game: " + e.getMessage());
         } catch (QuitGameException e) {
@@ -59,10 +63,15 @@ public final class QuitGameCommandAction implements V086Action {
             log.debug("Failed to close game: " + e.getMessage());
         }
 
-        try {
-            Thread.sleep(100);
-        } catch (InterruptedException e) {
-            log.error("Sleep Interrupted!", e);
+        if (leavingGame) {
+            // Give the quit notifications that were just queued a moment to reach the
+            // client before its next request is handled. A user who is in no game has
+            // nothing to wait for, and must not be able to stall this thread on demand.
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 }

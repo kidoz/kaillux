@@ -2,6 +2,7 @@ package su.kidoz.kaillera.controller.v086.command;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -29,6 +30,8 @@ import su.kidoz.kaillera.controller.v086.protocol.Chat_Notification;
 import su.kidoz.kaillera.controller.v086.protocol.Chat_Request;
 import su.kidoz.kaillera.controller.v086.protocol.GameChat_Request;
 import su.kidoz.kaillera.controller.v086.protocol.Quit_Request;
+import su.kidoz.kaillera.controller.v086.protocol.UserInformation;
+import su.kidoz.kaillera.controller.v086.protocol.V086Message;
 import su.kidoz.kaillera.model.KailleraUser;
 import su.kidoz.kaillera.model.exception.ChatException;
 
@@ -53,6 +56,43 @@ class CommandActionsTest {
     @BeforeEach
     void setUp() {
         when(clientHandler.getUser()).thenReturn(user);
+    }
+
+    @Nested
+    @DisplayName("LoginCommandAction")
+    class LoginCommandActionTests {
+
+        private final LoginCommandAction action = new LoginCommandAction();
+
+        @Test
+        @DisplayName("should apply the identity of a client that is not logged in")
+        void shouldApplyTheIdentityOfAClientThatIsNotLoggedIn() throws Exception {
+            when(user.isLoggedIn()).thenReturn(false);
+            when(clientHandler.getRemoteSocketAddress())
+                    .thenReturn(new InetSocketAddress("127.0.0.1", 40000));
+
+            action.performAction(new UserInformation(1, "Player", "Client", (byte) 1),
+                    clientHandler);
+
+            verify(user).setName("Player");
+            verify(user).setClientType("Client");
+        }
+
+        @Test
+        @DisplayName("should ignore UserInformation once the client is logged in")
+        void shouldIgnoreUserInformationOnceTheClientIsLoggedIn() throws Exception {
+            when(user.isLoggedIn()).thenReturn(true);
+            when(clientHandler.getRemoteSocketAddress())
+                    .thenReturn(new InetSocketAddress("127.0.0.1", 40000));
+
+            // Applying it again would skip every name check that the login made.
+            action.performAction(new UserInformation(2, "Someone\u200BElse", "Other", (byte) 6),
+                    clientHandler);
+
+            verify(user, never()).setName(any());
+            verify(user, never()).setClientType(any());
+            verify(clientHandler, never()).send(any(V086Message.class));
+        }
     }
 
     @Nested

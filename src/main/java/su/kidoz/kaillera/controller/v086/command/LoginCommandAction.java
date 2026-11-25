@@ -51,6 +51,13 @@ public final class LoginCommandAction implements V086Action {
             throw new FatalActionException("User not initialized for login");
         }
 
+        if (user.isLoggedIn()) {
+            // Identity is fixed once the login handshake completes. Applying it again
+            // would skip every name and client-type check in LoginValidator.
+            log.debug("{} sent {} after login; ignored", user, UserInformation.DESC);
+            return;
+        }
+
         InetSocketAddress socketAddress = clientHandler.getRemoteSocketAddress();
         if (socketAddress == null) {
             throw new FatalActionException("Remote socket address not available");

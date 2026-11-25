@@ -1,27 +1,38 @@
 package su.kidoz.kaillera.controller.v086;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static su.kidoz.kaillera.controller.v086.V086ClientHandler.isLoginPhaseMessage;
+import static su.kidoz.kaillera.controller.v086.V086ClientHandler.isNewerMessage;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import su.kidoz.kaillera.controller.messaging.MessageFormatException;
+import su.kidoz.kaillera.controller.v086.protocol.AllReady;
+import su.kidoz.kaillera.controller.v086.protocol.CachedGameData;
+import su.kidoz.kaillera.controller.v086.protocol.Chat_Request;
+import su.kidoz.kaillera.controller.v086.protocol.ClientACK;
+import su.kidoz.kaillera.controller.v086.protocol.CreateGame_Request;
+import su.kidoz.kaillera.controller.v086.protocol.GameChat_Request;
+import su.kidoz.kaillera.controller.v086.protocol.GameData;
+import su.kidoz.kaillera.controller.v086.protocol.GameKick;
+import su.kidoz.kaillera.controller.v086.protocol.JoinGame_Request;
+import su.kidoz.kaillera.controller.v086.protocol.KeepAlive;
+import su.kidoz.kaillera.controller.v086.protocol.PlayerDrop_Request;
+import su.kidoz.kaillera.controller.v086.protocol.QuitGame_Request;
+import su.kidoz.kaillera.controller.v086.protocol.Quit_Request;
+import su.kidoz.kaillera.controller.v086.protocol.StartGame_Request;
+import su.kidoz.kaillera.controller.v086.protocol.UserInformation;
+import su.kidoz.kaillera.controller.v086.protocol.V086Message;
+
 /**
- * Unit tests for V086ClientHandler - per-client session handler.
+ * Unit tests for the message classification in V086ClientHandler.
  *
  * <p>
- * V086ClientHandler is responsible for:
- * <ul>
- * <li>Managing per-client UDP connection on dynamic port</li>
- * <li>Message sequencing and acknowledgment</li>
- * <li>Game data caching for latency optimization</li>
- * <li>Event dispatch to appropriate handlers</li>
- * </ul>
- *
- * <p>
- * Note: Full integration tests require a running server. These tests focus on
- * unit-testable components and message number logic.
+ * These call the handler's own static methods. Driving its receive loop needs a
+ * bound port and the rest of the server; ProtocolE2ETest covers that.
  */
 @DisplayName("V086ClientHandler Tests")
 class V086ClientHandlerTest {
@@ -33,21 +44,18 @@ class V086ClientHandlerTest {
         @Test
         @DisplayName("should detect newer message with simple increment")
         void shouldDetectNewerMessageSimpleIncrement() {
-            // Message 10 is newer than message 5
             assertTrue(isNewerMessage(10, 5));
         }
 
         @Test
         @DisplayName("should detect older message")
         void shouldDetectOlderMessage() {
-            // Message 5 is NOT newer than message 10
-            assertTrue(!isNewerMessage(5, 10));
+            assertFalse(isNewerMessage(5, 10));
         }
 
         @Test
         @DisplayName("should handle wrap-around at 16-bit boundary")
         void shouldHandleWrapAround() {
-            // Message 5 after wrap is newer than 0xFFFE before wrap
             // Difference: (5 - 0xFFFE) & 0xFFFF = 7, which is < 0x8000
             assertTrue(isNewerMessage(5, 0xFFFE));
         }
@@ -55,22 +63,25 @@ class V086ClientHandlerTest {
         @Test
         @DisplayName("should detect stale message after wrap")
         void shouldDetectStaleMessageAfterWrap() {
-            // Message 0xFFFE is NOT newer than message 5 after wrap
-            // This would be a very old message that wrapped around completely
-            assertTrue(!isNewerMessage(0xFFFE, 5));
+            assertFalse(isNewerMessage(0xFFFE, 5));
+        }
+
+        @Test
+        @DisplayName("should treat half the number space ahead as too far to be newer")
+        void shouldTreatHalfTheNumberSpaceAsNotNewer() {
+            assertFalse(isNewerMessage(0x8000, 0));
+            assertTrue(isNewerMessage(0x7FFF, 0));
         }
 
         @Test
         @DisplayName("should handle same message number")
         void shouldHandleSameMessageNumber() {
-            // Same message number - not newer
-            assertTrue(!isNewerMessage(100, 100));
+            assertFalse(isNewerMessage(100, 100));
         }
 
         @Test
         @DisplayName("should handle initial message (last = -1)")
         void shouldHandleInitialMessage() {
-            // When last is -1, any message is considered new
             assertTrue(isNewerMessage(0, -1));
             assertTrue(isNewerMessage(1000, -1));
         }
@@ -78,113 +89,35 @@ class V086ClientHandlerTest {
         @Test
         @DisplayName("should handle message number zero")
         void shouldHandleMessageNumberZero() {
-            // Zero is valid after 0xFFFF wrap
             assertTrue(isNewerMessage(0, 0xFFFF));
         }
-
-        /**
-         * Simulates the message number comparison logic from V086ClientHandler. This
-         * determines if a candidate message number is newer than the last received.
-         */
-        private boolean isNewerMessage(int candidate, int last) {
-            if (last < 0)
-                return true;
-            int diff = (candidate - last) & 0xFFFF;
-            return diff > 0 && diff < 0x8000;
-        }
     }
 
     @Nested
-    @DisplayName("Message Number Generation")
-    class MessageNumberGeneration {
+    @DisplayName("Login phase gate")
+    class LoginPhaseGate {
 
         @Test
-        @DisplayName("should generate sequential message numbers")
-        void shouldGenerateSequentialNumbers() {
-            MessageNumberCounter counter = new MessageNumberCounter();
-
-            assertEquals(0, counter.getNext());
-            assertEquals(1, counter.getNext());
-            assertEquals(2, counter.getNext());
+        @DisplayName("should let the login handshake and leaving through")
+        void shouldLetTheLoginHandshakeAndLeavingThrough() throws MessageFormatException {
+            assertTrue(isLoginPhaseMessage(new UserInformation(1, "name", "client", (byte) 1)));
+            assertTrue(isLoginPhaseMessage(new ClientACK(1)));
+            assertTrue(isLoginPhaseMessage(new Quit_Request(1, "bye")));
         }
 
         @Test
-        @DisplayName("should wrap at 16-bit boundary")
-        void shouldWrapAtBoundary() {
-            MessageNumberCounter counter = new MessageNumberCounter();
+        @DisplayName("should stop every other client command before login")
+        void shouldStopEveryOtherClientCommandBeforeLogin() throws MessageFormatException {
+            V086Message[] commands = {new Chat_Request(1, "hi"), new CreateGame_Request(1, "rom"),
+                    new JoinGame_Request(1, 1, (byte) 1), new KeepAlive(1), new QuitGame_Request(1),
+                    new StartGame_Request(1), new GameChat_Request(1, "hi"), new GameKick(1, 2),
+                    new AllReady(1), new CachedGameData(1, 0), new GameData(1, new byte[]{1}),
+                    new PlayerDrop_Request(1),};
 
-            // Set counter near wrap point
-            counter.setCounter(0xFFFF);
-
-            assertEquals(0xFFFF, counter.getNext());
-            assertEquals(0, counter.getNext()); // Should wrap to 0
-            assertEquals(1, counter.getNext());
-        }
-
-        @Test
-        @DisplayName("should be thread-safe")
-        void shouldBeThreadSafe() throws Exception {
-            MessageNumberCounter counter = new MessageNumberCounter();
-            int numThreads = 10;
-            int incrementsPerThread = 1000;
-            Thread[] threads = new Thread[numThreads];
-
-            for (int i = 0; i < numThreads; i++) {
-                threads[i] = new Thread(() -> {
-                    for (int j = 0; j < incrementsPerThread; j++) {
-                        int num = counter.getNext();
-                        assertTrue(num >= 0 && num <= 0xFFFF);
-                    }
-                });
+            for (V086Message command : commands) {
+                assertFalse(isLoginPhaseMessage(command),
+                        command.getClass().getSimpleName() + " must wait for the login");
             }
-
-            for (Thread thread : threads) {
-                thread.start();
-            }
-
-            for (Thread thread : threads) {
-                thread.join();
-            }
-
-            // Due to concurrent access, the final value might not be exactly
-            // predictable, but the counter should be valid
-            int finalValue = counter.getNext();
-            assertTrue(finalValue >= 0 && finalValue <= 0xFFFF);
-        }
-    }
-
-    @Nested
-    @DisplayName("Buffer Size Constants")
-    class BufferSizeConstants {
-
-        @Test
-        @DisplayName("MAX_BUNDLE_SIZE should be reasonable")
-        void maxBundleSizeShouldBeReasonable() {
-            // V086 protocol bundles up to 5 messages per UDP packet
-            int MAX_BUNDLE_SIZE = 5;
-            assertTrue(MAX_BUNDLE_SIZE > 0);
-            assertTrue(MAX_BUNDLE_SIZE <= 32); // Protocol limit
-        }
-    }
-
-    /**
-     * Simple counter that simulates the message number counter in
-     * V086ClientHandler.
-     */
-    private static final class MessageNumberCounter {
-        private int counter = 0;
-
-        synchronized int getNext() {
-            int value = counter;
-            counter++;
-            if (counter > 0xFFFF) {
-                counter = 0;
-            }
-            return value;
-        }
-
-        synchronized void setCounter(int value) {
-            this.counter = value;
         }
     }
 }

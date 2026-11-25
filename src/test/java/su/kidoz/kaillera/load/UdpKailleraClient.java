@@ -4,7 +4,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.net.SocketTimeoutException;
 import java.net.StandardProtocolFamily;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
@@ -22,6 +21,7 @@ import su.kidoz.kaillera.controller.messaging.MessageFormatException;
 import su.kidoz.kaillera.controller.messaging.ParseException;
 import su.kidoz.kaillera.controller.v086.protocol.AllReady;
 import su.kidoz.kaillera.controller.v086.protocol.CachedGameData;
+import su.kidoz.kaillera.controller.v086.protocol.Chat_Notification;
 import su.kidoz.kaillera.controller.v086.protocol.Chat_Request;
 import su.kidoz.kaillera.controller.v086.protocol.ClientACK;
 import su.kidoz.kaillera.controller.v086.protocol.CreateGame_Notification;
@@ -40,6 +40,7 @@ import su.kidoz.kaillera.controller.v086.protocol.PlayerDrop_Request;
 import su.kidoz.kaillera.controller.v086.protocol.QuitGame_Notification;
 import su.kidoz.kaillera.controller.v086.protocol.QuitGame_Request;
 import su.kidoz.kaillera.controller.v086.protocol.Quit_Request;
+import su.kidoz.kaillera.controller.v086.protocol.Quit_Notification;
 import su.kidoz.kaillera.controller.v086.protocol.ServerACK;
 import su.kidoz.kaillera.controller.v086.protocol.ServerStatus;
 import su.kidoz.kaillera.controller.v086.protocol.StartGame_Notification;
@@ -89,7 +90,7 @@ public final class UdpKailleraClient implements Closeable {
 
     private DatagramChannel channel;
     private InetSocketAddress serverAddress;
-    private int assignedPort;
+    private volatile int assignedPort;
     private final AtomicInteger messageNumber = new AtomicInteger(0);
     private volatile boolean connected = false;
     private volatile boolean loggedIn = false;
@@ -118,6 +119,8 @@ public final class UdpKailleraClient implements Closeable {
 
     private final List<byte[]> receivedGameData = new CopyOnWriteArrayList<>();
     private final List<String> gameChatMessages = new CopyOnWriteArrayList<>();
+    private final List<String> lobbyChats = new CopyOnWriteArrayList<>();
+    private final List<String> quitNotifications = new CopyOnWriteArrayList<>();
 
     public UdpKailleraClient(String serverHost, int connectPort, String clientName) {
         this(serverHost, connectPort, clientName, "LoadTestClient/1.0", CONNECTION_LAN);
@@ -142,8 +145,11 @@ public final class UdpKailleraClient implements Closeable {
     public boolean connect(long timeoutMs) throws IOException {
         // Use IPv4 explicitly to avoid IPv6 issues
         channel = DatagramChannel.open(StandardProtocolFamily.INET);
-        channel.configureBlocking(true);
-        channel.socket().setSoTimeout((int) timeoutMs);
+        // Non-blocking, with explicit deadlines. The socket timeout of the
+        // DatagramSocket adapter does not reach a blocking DatagramChannel, so
+        // with a blocking channel every wait below would last until a datagram
+        // arrives, however long that takes.
+        channel.configureBlocking(false);
 
         // Bind to a local port so we can receive responses
         channel.bind(null);
@@ -163,7 +169,14 @@ public final class UdpKailleraClient implements Closeable {
         // Receive HELLOD00D with assigned port
         receiveBuffer.clear();
         try {
-            channel.receive(receiveBuffer);
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            while (channel.receive(receiveBuffer) == null) {
+                if (System.currentTimeMillis() >= deadline) {
+                    log.error("{}: No response received (timeout)", clientName);
+                    return false;
+                }
+                sleepBeforePolling();
+            }
         } catch (ClosedChannelException e) {
             log.debug("{}: Channel closed during receive", clientName);
             return false;
@@ -388,6 +401,10 @@ public final class UdpKailleraClient implements Closeable {
     /**
      * Receives and processes incoming messages.
      *
+     * <p>
+     * Returns at once when no datagram is waiting; callers that wait for something
+     * call this in a loop.
+     *
      * @return true if a bundle was processed
      */
     public boolean receiveAndProcess() throws IOException {
@@ -396,7 +413,7 @@ public final class UdpKailleraClient implements Closeable {
         SocketAddress from;
         try {
             from = channel.receive(receiveBuffer);
-        } catch (SocketTimeoutException | ClosedChannelException e) {
+        } catch (ClosedChannelException e) {
             return false;
         }
 
@@ -512,6 +529,18 @@ public final class UdpKailleraClient implements Closeable {
                 }
                 break;
 
+            case Chat_Notification.ID :
+                if (message instanceof Chat_Notification chat) {
+                    lobbyChats.add(chat.getUserName() + ": " + chat.getMessage());
+                }
+                break;
+
+            case Quit_Notification.ID :
+                if (message instanceof Quit_Notification quit) {
+                    quitNotifications.add(quit.getUserName() + ": " + quit.getMessage());
+                }
+                break;
+
             case GameChat_Notification.ID :
                 if (message instanceof GameChat_Notification chat) {
                     gameChatMessages.add(chat.getUserName() + ": " + chat.getMessage());
@@ -549,7 +578,16 @@ public final class UdpKailleraClient implements Closeable {
         }
     }
 
-    private void sendMessages(V086Message... messages) throws IOException {
+    /**
+     * Sends exactly the messages given, each with the message number it carries.
+     * Tests use this for commands that a real client would never send.
+     *
+     * @param messages
+     *            the messages to send in one datagram
+     * @throws IOException
+     *             if the datagram cannot be sent
+     */
+    public void sendMessages(V086Message... messages) throws IOException {
         if (serverAddress == null) {
             throw new IllegalStateException("Not connected");
         }
@@ -561,7 +599,12 @@ public final class UdpKailleraClient implements Closeable {
         channel.send(buffer, serverAddress);
     }
 
-    private int nextMessageNumber() {
+    /**
+     * Returns the next message number of this client's outbound sequence.
+     *
+     * @return a number between 0 and 0xFFFF
+     */
+    public int nextMessageNumber() {
         return messageNumber.incrementAndGet() & 0xFFFF;
     }
 
@@ -574,11 +617,21 @@ public final class UdpKailleraClient implements Closeable {
                 return false;
             }
 
-            channel.socket().setSoTimeout((int) Math.min(remaining, 200));
-            receiveAndProcess();
+            if (!receiveAndProcess()) {
+                sleepBeforePolling();
+            }
         }
 
         return true;
+    }
+
+    private static void sleepBeforePolling() throws IOException {
+        try {
+            Thread.sleep(5);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting for the server", e);
+        }
     }
 
     private boolean isSelf(int messageUserId, String messageUserName) {
@@ -668,6 +721,24 @@ public final class UdpKailleraClient implements Closeable {
 
     public List<String> getGameChatMessages() {
         return List.copyOf(gameChatMessages);
+    }
+
+    /**
+     * Returns the lobby chat messages received so far, as "user: message".
+     *
+     * @return the received lobby chat messages
+     */
+    public List<String> getLobbyChatMessages() {
+        return List.copyOf(lobbyChats);
+    }
+
+    /**
+     * Returns the quit notifications received so far, as "user: message".
+     *
+     * @return the received quit notifications
+     */
+    public List<String> getQuitNotifications() {
+        return List.copyOf(quitNotifications);
     }
 
     public String getLastInformationMessage() {

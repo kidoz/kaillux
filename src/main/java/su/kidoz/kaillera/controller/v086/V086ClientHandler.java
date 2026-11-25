@@ -13,6 +13,9 @@ import su.kidoz.kaillera.controller.v086.action.V086Action;
 import su.kidoz.kaillera.controller.v086.action.V086GameEventHandler;
 import su.kidoz.kaillera.controller.v086.action.V086ServerEventHandler;
 import su.kidoz.kaillera.controller.v086.action.V086UserEventHandler;
+import su.kidoz.kaillera.controller.v086.protocol.ClientACK;
+import su.kidoz.kaillera.controller.v086.protocol.Quit;
+import su.kidoz.kaillera.controller.v086.protocol.UserInformation;
 import su.kidoz.kaillera.controller.v086.protocol.V086Bundle;
 import su.kidoz.kaillera.controller.v086.protocol.V086BundleFormatException;
 import su.kidoz.kaillera.controller.v086.protocol.V086Message;
@@ -25,13 +28,16 @@ import su.kidoz.kaillera.model.event.KailleraEvent;
 import su.kidoz.kaillera.model.event.KailleraEventListener;
 import su.kidoz.kaillera.model.event.ServerEvent;
 import su.kidoz.kaillera.model.event.UserEvent;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.net.BindException;
 import su.kidoz.net.PrivateUDPServer;
 import su.kidoz.util.ClientGameDataCache;
+import su.kidoz.util.EmuLang;
 import su.kidoz.util.EmuLinkerExecutor;
 import su.kidoz.util.EmuUtil;
 import su.kidoz.util.GameDataCache;
 import su.kidoz.util.ServerGameDataCache;
+import su.kidoz.util.ThrottledLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,6 +48,14 @@ import org.slf4j.LoggerFactory;
 public final class V086ClientHandler extends PrivateUDPServer implements KailleraEventListener {
     private static final Logger log = LoggerFactory.getLogger(V086ClientHandler.class);
     private static final int MAX_BUNDLE_SIZE = 5;
+    // A client chooses how many bad bundles and failing commands it sends, so
+    // these events may not be written once per packet.
+    private static final ThrottledLogger MALFORMED_BUNDLE_LOG = new ThrottledLogger(log,
+            "malformed client bundle");
+    private static final ThrottledLogger UNEXPECTED_BUNDLE_LOG = new ThrottledLogger(log,
+            "unexpected client bundle exception");
+    private static final ThrottledLogger ACTION_FAILURE_LOG = new ThrottledLogger(log,
+            "client action failure");
 
     private final V086Controller controller;
     private final int bufferSize;
@@ -172,14 +186,16 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
         serverCache = new ServerGameDataCache(256);
     }
 
-    public void startSpeedTest() {
+    // The speed test keeps plain longs and ints. Its accessors synchronize on the
+    // handler so that the values are consistent whichever thread reads them.
+    public synchronized void startSpeedTest() {
         long now = System.currentTimeMillis();
         testStart = now;
         lastMeasurement = now;
         measurementCount = 0;
     }
 
-    public void addSpeedMeasurement() {
+    public synchronized void addSpeedMeasurement() {
         int et = (int) (System.currentTimeMillis() - lastMeasurement);
         if (et < bestTime)
             bestTime = et;
@@ -187,15 +203,15 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
         lastMeasurement = System.currentTimeMillis();
     }
 
-    public int getSpeedMeasurementCount() {
+    public synchronized int getSpeedMeasurementCount() {
         return measurementCount;
     }
 
-    public int getBestNetworkSpeed() {
+    public synchronized int getBestNetworkSpeed() {
         return bestTime;
     }
 
-    public int getAverageNetworkSpeed() {
+    public synchronized int getAverageNetworkSpeed() {
         if (measurementCount <= 0) {
             return 0;
         }
@@ -276,24 +292,12 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
 
         try {
             inBundle = V086Bundle.parse(buffer, lastMessageNumber);
-        } catch (ParseException e) {
-            buffer.rewind();
-            log.warn(toString() + " failed to parse: " + EmuUtil.dumpBuffer(buffer), e);
-            return;
-        } catch (V086BundleFormatException e) {
-            buffer.rewind();
-            log.warn(toString() + " received invalid message bundle: " + EmuUtil.dumpBuffer(buffer),
-                    e);
-            return;
-        } catch (MessageFormatException e) {
-            buffer.rewind();
-            log.warn(toString() + " received invalid message: " + EmuUtil.dumpBuffer(buffer), e);
+        } catch (ParseException | V086BundleFormatException | MessageFormatException e) {
+            logRejectedBundle(buffer, e);
             return;
         } catch (RuntimeException e) {
             // A malformed packet must not terminate this client's receive loop.
-            buffer.rewind();
-            log.warn(toString() + " failed to parse message bundle: " + EmuUtil.dumpBuffer(buffer),
-                    e);
+            logRejectedBundle(buffer, e);
             return;
         }
 
@@ -327,7 +331,19 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
 
                         V086Action action = actionRouter.getAction(messages[i].getID());
                         if (action == null) {
-                            log.error("No action defined to handle client message: " + messages[i]);
+                            // Only the server sends these message types. A client that
+                            // sends one is confused or probing, not something to alert on.
+                            log.debug("{}: no action defined for client message: {}", this,
+                                    messages[i]);
+                            continue;
+                        }
+
+                        if (!localUser.isLoggedIn() && !isLoginPhaseMessage(messages[i])) {
+                            // Every other command assumes a logged-in user: some change
+                            // state (PlayerDrop moves a connecting user to IDLE) and some
+                            // trust fields that are null until UserInformation arrives.
+                            log.debug("{}: dropped message {} from a client that is not logged in",
+                                    this, messages[i].getID());
                             continue;
                         }
 
@@ -335,7 +351,8 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
                             action.performAction(messages[i], this);
                         } catch (RuntimeException e) {
                             // Keep the receive loop alive even if a single action fails.
-                            log.error(toString() + " action failed: " + messages[i], e);
+                            ACTION_FAILURE_LOG.error("{}: action failed: {}", this,
+                                    InputValidator.sanitizeForLog(String.valueOf(messages[i])), e);
                         }
                     }
                 }
@@ -344,6 +361,43 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
             log.warn(toString() + " fatal action, closing connection: " + e.getMessage());
             stop();
         }
+    }
+
+    /**
+     * Records a bundle the client sent that could not be parsed.
+     *
+     * @param buffer
+     *            the rejected bundle
+     * @param cause
+     *            why it was rejected
+     */
+    private void logRejectedBundle(ByteBuffer buffer, Exception cause) {
+        buffer.rewind();
+        if (cause instanceof RuntimeException) {
+            // Unexpected exceptions carry a stack trace; keep it, but only for the
+            // first few.
+            UNEXPECTED_BUNDLE_LOG.error("{}: failed to parse message bundle ({} bytes)", this,
+                    buffer.remaining(), cause);
+        } else {
+            MALFORMED_BUNDLE_LOG.warn("{}: rejected a malformed message bundle ({} bytes)", this,
+                    buffer.remaining());
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("{}: rejected bundle contents: {}", this, EmuUtil.dumpBuffer(buffer));
+        }
+    }
+
+    /**
+     * True for the only messages a client may send before its login completes.
+     *
+     * @param message
+     *            the inbound message
+     * @return true if the message belongs to the login handshake or leaves the
+     *         server
+     */
+    static boolean isLoginPhaseMessage(V086Message message) {
+        byte id = message.getID();
+        return id == UserInformation.ID || id == ClientACK.ID || id == Quit.ID;
     }
 
     public void actionPerformed(KailleraEvent event) {
@@ -440,19 +494,55 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
 
             numToSend = lastMessageBuffer.fill(outMessages, numToSend);
             V086Bundle outBundle = new V086Bundle(outMessages, numToSend);
-            outBundle.writeTo(outBuffer);
-            outBuffer.flip();
-            super.send(outBuffer);
-            outBuffer.clear();
+            try {
+                outBundle.writeTo(outBuffer);
+                outBuffer.flip();
+                super.send(outBuffer);
+            } catch (RuntimeException e) {
+                // A message that does not fit must cost that message only. Letting the
+                // exception escape reaches UDPServer.run(), which stops this client.
+                UNEXPECTED_BUNDLE_LOG.error(
+                        "{}: failed to write a bundle of {} message(s), dropping them", this,
+                        numToSend, e);
+            } finally {
+                // A failed write leaves a partially written buffer behind.
+                outBuffer.clear();
+            }
         }
     }
 
-    private boolean isNewerMessage(int candidate, int last) {
+    /**
+     * Compares 16-bit message numbers with wrap-around: true when {@code candidate}
+     * is up to half the number space ahead of {@code last}.
+     *
+     * @param candidate
+     *            the number of the arrived message
+     * @param last
+     *            the number of the newest message handled so far, or -1
+     * @return true if the candidate is newer
+     */
+    static boolean isNewerMessage(int candidate, int last) {
         if (last < 0) {
             return true;
         }
 
         int diff = (candidate - last) & 0xFFFF;
         return diff > 0 && diff < 0x8000;
+    }
+
+    @Override
+    protected void afterUnexpectedExit() {
+        // The receive loop is gone, so this session cannot continue. Leave through the
+        // normal quit path: that removes the user, drops them from any game they were
+        // holding up, and tells the other players.
+        KailleraUser localUser = user;
+        if (localUser != null && localUser.isLoggedIn()) {
+            try {
+                localUser.quit(EmuLang.getString("KailleraServerImpl.ForcedQuitConnectionError"));
+            } catch (Exception e) {
+                log.error("Failed to quit {} after its receive loop stopped", localUser, e);
+            }
+        }
+        stop();
     }
 }
