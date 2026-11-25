@@ -17,6 +17,7 @@ import su.kidoz.config.ServerConfig;
 import su.kidoz.config.ServerConfigs;
 import su.kidoz.config.ServerInfrastructure;
 import su.kidoz.kaillera.access.AccessManager;
+import su.kidoz.kaillera.metrics.GameMetricsCollector;
 import su.kidoz.kaillera.metrics.ServerMetrics;
 import su.kidoz.kaillera.service.ServerPolicyServices;
 import su.kidoz.kaillera.model.KailleraGame;
@@ -38,6 +39,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -99,7 +102,9 @@ class ServerLoadTest {
         ServerConfigs configs = new ServerConfigs(serverConfig, gameConfig, masterListConfig);
         ServerPolicyServices policyServices = new ServerPolicyServices(loginValidator,
                 chatModerationService, announcementService);
-        ServerMetrics serverMetrics = new ServerMetrics(new TestStatsCollector(), null);
+        ServerMetrics serverMetrics = new ServerMetrics(new TestStatsCollector(),
+                // createGame records a metric; without a collector it would fail.
+                new GameMetricsCollector(new SimpleMeterRegistry(), gameManager));
 
         server = new KailleraServerImpl(infrastructure, configs, policyServices, serverMetrics,
                 new AutoFireDetectorFactoryImpl(), userManager, gameManager);

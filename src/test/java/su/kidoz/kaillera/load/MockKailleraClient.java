@@ -44,7 +44,7 @@ public class MockKailleraClient implements KailleraEventListener {
     private CountDownLatch gameStartLatch;
 
     private LoadTestMetrics metrics;
-    private long injectedLatencyMs = 0;
+    private volatile long injectedLatencyMs = 0;
 
     public MockKailleraClient(String name, int clientId) {
         this.name = name;

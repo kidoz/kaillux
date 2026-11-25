@@ -46,7 +46,7 @@ class ExternalServerLoadTest {
 
     private String serverHost;
     private int serverPort;
-    private int numClients;
+    private volatile int numClients;
 
     private ExecutorService executor;
     private List<UdpKailleraClient> clients;

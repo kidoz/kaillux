@@ -57,16 +57,19 @@ dependencies {
 def adminUiDist = layout.projectDirectory.dir('src/main/resources/static/admin/dist')
 
 tasks.named('processResources') {
-    // The admin UI is built separately by npm/Vite. Its sources do not belong
-    // in the server artifact; the built bundle is packaged at static/admin/ so
-    // /admin/index.html and /admin/assets/* resolve.
+    // The admin UI is built separately by npm/Vite. Its sources and tooling do
+    // not belong in the server artifact, where they would be served publicly; the
+    // built bundle is packaged at static/admin/ so /admin/index.html and
+    // /admin/assets/* resolve.
     exclude 'static/admin/src/**'
     exclude 'static/admin/node_modules/**'
     exclude 'static/admin/package.json'
     exclude 'static/admin/package-lock.json'
     exclude 'static/admin/vite.config.ts'
     exclude 'static/admin/tsconfig.json'
-    exclude 'static/admin/biome.json'
+    exclude 'static/admin/eslint.config.ts'
+    exclude 'static/admin/prettier.config.ts'
+    exclude 'static/admin/.prettierignore'
     exclude 'static/admin/.gitignore'
     exclude 'static/admin/index.html'
     exclude 'static/admin/dist/**'
@@ -104,8 +107,11 @@ tasks.named('test') {
         events "passed", "skipped", "failed"
         showStandardStreams = true
     }
-    // Pass system properties to tests
-    systemProperty 'load.tests', System.getProperty('load.tests')
+    // Gradle does not pass -D flags from the command line to test workers, so the
+    // load-test knobs (load.*, kaillera.*) are forwarded here. Without this the
+    // load tests skip or ignore their parameters.
+    System.getProperties().findAll { it.key.startsWith('load.') || it.key.startsWith('kaillera.') }
+            .each { systemProperty it.key, it.value }
 }
 
 spotless {
@@ -175,15 +181,24 @@ jacocoTestReport {
         html.required = true
         csv.required = false
     }
-    afterEvaluate {
-        classDirectories.setFrom(files(classDirectories.files.collect {
-            fileTree(dir: it, excludes: [
-                '**/protocol/**',  // Protocol message classes
-                '**/messaging/**', // Messaging infrastructure
-                '**/EmuLinkerApplication.class', // Main application
-            ])
-        }))
-    }
+}
+
+// Classes left out of coverage: protocol message classes are data carriers that
+// the end-to-end protocol test exercises as a whole.
+def coverageExcludes = [
+    '**/protocol/**',
+    '**/messaging/**',
+    '**/EmuLinkerApplication.class',
+]
+
+// The report and the gate must measure the same classes, or the gate can pass on
+// code the report never shows.
+afterEvaluate {
+    def coverageClasses = files(jacocoTestReport.classDirectories.files.collect {
+        fileTree(dir: it, excludes: coverageExcludes)
+    })
+    jacocoTestReport.classDirectories.setFrom(coverageClasses)
+    jacocoTestCoverageVerification.classDirectories.setFrom(coverageClasses)
 }
 
 jacocoTestCoverageVerification {
@@ -196,6 +211,8 @@ jacocoTestCoverageVerification {
     }
 }
 
+// The gate belongs to check: a report that nobody enforces lets coverage drop.
 tasks.named('check') {
     dependsOn jacocoTestReport
+    dependsOn jacocoTestCoverageVerification
 }
