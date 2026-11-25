@@ -23,10 +23,12 @@ import su.kidoz.kaillera.controller.messaging.ByteBufferMessage;
 import su.kidoz.kaillera.controller.messaging.MessageFormatException;
 import su.kidoz.kaillera.model.exception.NewConnectionException;
 import su.kidoz.kaillera.model.exception.ServerFullException;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.net.BindException;
 import su.kidoz.net.MultiAddressUDPServer;
 import su.kidoz.util.EmuLinkerExecutor;
 import su.kidoz.util.EmuUtil;
+import su.kidoz.util.ThrottledLogger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
@@ -34,11 +36,27 @@ import org.springframework.context.SmartLifecycle;
 public class ConnectController extends MultiAddressUDPServer implements SmartLifecycle {
     private static final Logger log = LoggerFactory.getLogger(ConnectController.class);
 
+    /** Most bytes of a junk datagram the DEBUG log shows. */
+    private static final int DUMP_LIMIT_BYTES = 64;
+
+    // Anything on the internet can send to the connect port, including with a
+    // spoofed source, so these events may not be written once per datagram.
+    private static final ThrottledLogger INVALID_MESSAGE_LOG = new ThrottledLogger(log,
+            "invalid connect message");
+    private static final ThrottledLogger DENIED_CONNECTION_LOG = new ThrottledLogger(log,
+            "denied connection");
+    private static final ThrottledLogger FAILED_START_LOG = new ThrottledLogger(log,
+            "failed to start a client handler");
+
     private final EmuLinkerExecutor threadPool;
     private final AccessManager accessManager;
     private final Map<String, KailleraServerController> controllersMap;
 
     private final int bufferSize;
+
+    // One buffer per receive thread. A direct buffer per datagram on the public
+    // connect port turns a flood into allocation pressure.
+    private final ThreadLocal<ByteBuffer> receiveBuffer;
 
     private final AtomicLong startTime = new AtomicLong(0);
     private final AtomicInteger requestCount = new AtomicInteger(0);
@@ -60,7 +78,10 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
         setExecutor(threadPool);
 
         int port = config.getConnect().getPort();
-        this.bufferSize = config.getConnect().getBufferSize();
+        int connectBufferSize = config.getConnect().getBufferSize();
+        this.bufferSize = connectBufferSize;
+        this.receiveBuffer = ThreadLocal
+                .withInitial(() -> ByteBufferMessage.getBuffer(connectBufferSize));
         List<InetAddress> bindAddresses = config.getParsedBindAddresses();
 
         controllersMap = new HashMap<String, KailleraServerController>();
@@ -127,11 +148,13 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
     }
 
     protected ByteBuffer getBuffer() {
-        return ByteBufferMessage.getBuffer(bufferSize);
+        ByteBuffer buffer = receiveBuffer.get();
+        buffer.clear();
+        return buffer;
     }
 
     protected void releaseBuffer(ByteBuffer buffer) {
-        ByteBufferMessage.releaseBuffer(buffer);
+        // The buffer belongs to this thread and is reused by the next datagram.
     }
 
     public String toString() {
@@ -171,8 +194,15 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
         return 30;
     }
 
-    protected synchronized void handleReceived(ByteBuffer buffer,
-            InetSocketAddress fromSocketAddress) {
+    /**
+     * Handles one datagram from the public connect port.
+     *
+     * <p>
+     * No monitor is taken here: the counters are atomic, the controller map never
+     * changes after construction, and everything downstream synchronizes its own
+     * state. Serializing handshakes would let one address family stall the other.
+     */
+    protected void handleReceived(ByteBuffer buffer, InetSocketAddress fromSocketAddress) {
         requestCount.incrementAndGet();
 
         ConnectMessage inMessage;
@@ -181,10 +211,16 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
             inMessage = ConnectMessage.parse(buffer);
         } catch (MessageFormatException e) {
             messageFormatErrorCount.incrementAndGet();
-            buffer.rewind();
-            log.warn("Received invalid message from "
-                    + EmuUtil.formatSocketAddress(fromSocketAddress) + ": "
-                    + EmuUtil.dumpBuffer(buffer));
+            // A hex dump of attacker-chosen bytes multiplies the cost of a junk
+            // datagram, so the dump is DEBUG-only and truncated there.
+            INVALID_MESSAGE_LOG.warn("Received invalid message from {} ({} bytes)",
+                    EmuUtil.formatSocketAddress(fromSocketAddress), buffer.limit());
+            if (log.isDebugEnabled()) {
+                buffer.rewind();
+                buffer.limit(Math.min(buffer.limit(), DUMP_LIMIT_BYTES));
+                log.debug("Invalid connect message from {}: {}",
+                        EmuUtil.formatSocketAddress(fromSocketAddress), EmuUtil.dumpBuffer(buffer));
+            }
             return;
         }
 
@@ -201,8 +237,10 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
 
         if (!(inMessage instanceof ConnectMessage_HELLO connectMessage)) {
             messageFormatErrorCount.incrementAndGet();
-            log.warn("Received unexpected message type from "
-                    + EmuUtil.formatSocketAddress(fromSocketAddress) + ": " + inMessage);
+            // Only the server sends the other message types. A client that sends one is
+            // confused or probing, which is not worth a warning per packet.
+            log.debug("Received unexpected message type from {}: {}",
+                    EmuUtil.formatSocketAddress(fromSocketAddress), inMessage);
             return;
         }
 
@@ -211,17 +249,17 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
         KailleraServerController protocolController = getController(connectMessage.getProtocol());
         if (protocolController == null) {
             protocolErrorCount.incrementAndGet();
-            log.error("Client requested an unhandled protocol "
-                    + EmuUtil.formatSocketAddress(fromSocketAddress) + ": "
-                    + connectMessage.getProtocol());
+            DENIED_CONNECTION_LOG.warn("Client requested an unhandled protocol from {}: {}",
+                    EmuUtil.formatSocketAddress(fromSocketAddress),
+                    InputValidator.sanitizeForLog(connectMessage.getProtocol()));
             send(new ConnectMessage_TOO(), fromSocketAddress);
             return;
         }
 
         if (!accessManager.isAddressAllowed(fromSocketAddress.getAddress())) {
             deniedOtherCount.incrementAndGet();
-            log.warn("AccessManager denied connection from "
-                    + EmuUtil.formatSocketAddress(fromSocketAddress));
+            DENIED_CONNECTION_LOG.warn("AccessManager denied connection from {}",
+                    EmuUtil.formatSocketAddress(fromSocketAddress));
             send(new ConnectMessage_TOO(), fromSocketAddress);
         } else {
             int privatePort;
@@ -232,8 +270,8 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
 
                 if (privatePort <= 0) {
                     failedToStartCount.incrementAndGet();
-                    log.error(protocolController + " failed to start for "
-                            + EmuUtil.formatSocketAddress(fromSocketAddress));
+                    FAILED_START_LOG.error("{} failed to start for {}", protocolController,
+                            EmuUtil.formatSocketAddress(fromSocketAddress));
                     send(new ConnectMessage_TOO(), fromSocketAddress);
                     return;
                 }
@@ -243,14 +281,22 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
                         + fromSocketAddress.getAddress().getHostAddress());
                 send(new ConnectMessage_HELLOD00D(privatePort), fromSocketAddress);
             } catch (ServerFullException e) {
+                // Reached for every HELLO beyond an admission limit, so it stays DEBUG.
                 deniedServerFullCount.incrementAndGet();
                 log.debug("Sending server full response to "
                         + EmuUtil.formatSocketAddress(fromSocketAddress));
                 send(new ConnectMessage_TOO(), fromSocketAddress);
             } catch (NewConnectionException e) {
                 deniedOtherCount.incrementAndGet();
-                log.warn(protocolController + " denied connection from "
-                        + EmuUtil.formatSocketAddress(fromSocketAddress) + ": " + e.getMessage());
+                DENIED_CONNECTION_LOG.warn("{} denied connection from {}: {}", protocolController,
+                        EmuUtil.formatSocketAddress(fromSocketAddress), e.getMessage());
+                send(new ConnectMessage_TOO(), fromSocketAddress);
+            } catch (RuntimeException e) {
+                // Escaping, this would end the receive loop and silence this address
+                // family until restart.
+                failedToStartCount.incrementAndGet();
+                FAILED_START_LOG.error("{} failed while handling a connection request from {}",
+                        protocolController, EmuUtil.formatSocketAddress(fromSocketAddress), e);
                 send(new ConnectMessage_TOO(), fromSocketAddress);
             }
         }

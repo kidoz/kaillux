@@ -30,8 +30,6 @@ import org.slf4j.LoggerFactory;
 public abstract class MultiAddressUDPServer implements Executable {
     private static final Logger log = LoggerFactory.getLogger(MultiAddressUDPServer.class);
 
-    private static final int SOCKET_TIMEOUT_MS = 1000;
-
     private final List<ChannelHandler> handlers = new CopyOnWriteArrayList<>();
     private final boolean shutdownOnExit;
     private Executor executor;
@@ -192,7 +190,8 @@ public abstract class MultiAddressUDPServer implements Executable {
 
                 channel.socket().setReceiveBufferSize(bufferSize);
                 channel.socket().setSendBufferSize(bufferSize);
-                channel.socket().setSoTimeout(SOCKET_TIMEOUT_MS);
+                // No socket timeout: it has no effect on a blocking DatagramChannel.
+                // Shutdown relies on stop() closing the channel, which wakes receive().
 
                 log.info("Bound to {}:{}", bindAddress.getHostAddress(), port);
             } catch (IOException e) {

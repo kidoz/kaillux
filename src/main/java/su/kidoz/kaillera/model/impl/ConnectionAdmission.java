@@ -11,6 +11,7 @@ import su.kidoz.config.ServerConfig;
 import su.kidoz.kaillera.access.AccessManager;
 import su.kidoz.kaillera.model.exception.ServerFullException;
 import su.kidoz.util.EmuLang;
+import su.kidoz.util.ThrottledLogger;
 
 /**
  * Decides whether a new HELLO may take a connecting slot.
@@ -21,6 +22,8 @@ import su.kidoz.util.EmuLang;
  */
 public final class ConnectionAdmission {
     private static final Logger log = LoggerFactory.getLogger(ConnectionAdmission.class);
+    // One line per denied HELLO is a log flood for anyone who can send packets.
+    private static final ThrottledLogger DENIED_LOG = new ThrottledLogger(log, "denied handshake");
     private static final int STALE_WINDOW_MS = 2_000;
     private static final int MAX_TRACKED_ADDRESSES = 2_048;
 
@@ -57,7 +60,7 @@ public final class ConnectionAdmission {
 
     private static void deny(InetAddress address, String reason) throws ServerFullException {
         String host = address == null ? "unknown" : address.getHostAddress();
-        log.warn("Connection from {} denied: {}", host, reason);
+        DENIED_LOG.warn("Connection from {} denied: {}", host, reason);
         throw new ServerFullException(
                 EmuLang.getString("KailleraServerImpl.LoginDeniedServerFull"));
     }

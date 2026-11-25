@@ -18,12 +18,11 @@ import org.slf4j.LoggerFactory;
 public abstract class UDPServer implements Executable {
     private static final Logger log = LoggerFactory.getLogger(UDPServer.class);
 
-    // Socket timeout in ms - allows periodic check of stopFlag during shutdown
-    private static final int SOCKET_TIMEOUT_MS = 1000;
-
     private int bindPort;
     private InetAddress bindAddress;
-    private DatagramChannel channel;
+    // Read by the receive loop without the monitor; stop() closes it from another
+    // thread, which is what wakes a receive() blocked in that loop.
+    private volatile DatagramChannel channel;
     private volatile boolean isRunning = false;
     private volatile boolean stopFlag = false;
 
@@ -128,8 +127,8 @@ public abstract class UDPServer implements Executable {
 
             channel.socket().setReceiveBufferSize(bufferSize);
             channel.socket().setSendBufferSize(bufferSize);
-            // Set socket timeout to allow graceful shutdown
-            channel.socket().setSoTimeout(SOCKET_TIMEOUT_MS);
+            // No socket timeout: it has no effect on a blocking DatagramChannel.
+            // Shutdown relies on stop() closing the channel, which wakes receive().
         } catch (IOException e) {
             String addressStr = address != null ? address.getHostAddress() + ":" : "";
             throw new BindException("Failed to bind to " + addressStr + port, port, e);
@@ -204,10 +203,19 @@ public abstract class UDPServer implements Executable {
         } catch (Throwable e) {
             log.error("UDPServer on port " + getBindPort() + " caught unexpected exception!", e);
             stop();
+            afterUnexpectedExit();
         } finally {
             isRunning = false;
             log.debug(toString() + ": thread exiting...");
         }
+    }
+
+    /**
+     * Called on the receive thread after an unexpected exception ended the loop and
+     * the socket was closed. The default does nothing; subclasses override it to
+     * release whatever depended on the loop.
+     */
+    protected void afterUnexpectedExit() {
     }
 
     private final class ShutdownThread extends Thread {

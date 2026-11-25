@@ -21,6 +21,14 @@ public class ServerMaintenanceTask implements Runnable {
     // misconfigured
     private static final long MIN_SLEEP_INTERVAL_MS = 1000;
 
+    /**
+     * A session that never started the login handshake is held at least this long.
+     */
+    static final long MIN_PRE_LOGIN_TIMEOUT_MS = 1500;
+
+    /** Pre-login timeout, as a multiple of maxPing. */
+    static final long PRE_LOGIN_TIMEOUT_PING_FACTOR = 6;
+
     private final UserManager userManager;
     private final AccessManager accessManager;
     private final int maxPing;
@@ -28,7 +36,14 @@ public class ServerMaintenanceTask implements Runnable {
     private final int idleTimeout;
     private final Consumer<UserQuitRequest> quitHandler;
 
+    /** Timeout for a handshake that started but never completed. */
+    private final long connectTimeoutMillis;
+
+    /** Timeout for a session that was never followed by a UserInformation. */
+    private final long preLoginTimeoutMillis;
+
     private volatile boolean stopFlag = false;
+    private volatile Thread thread;
 
     /**
      * Request to quit a user with a specific message.
@@ -44,10 +59,22 @@ public class ServerMaintenanceTask implements Runnable {
         this.keepAliveTimeout = keepAliveTimeout;
         this.idleTimeout = idleTimeout;
         this.quitHandler = quitHandler;
+        this.connectTimeoutMillis = maxPing * 15L;
+        // A HELLO that is never followed by UserInformation is almost always abandoned
+        // or spoofed, and each one holds one of the few connecting slots, so it expires
+        // sooner than a handshake that stalled half way.
+        this.preLoginTimeoutMillis = Math.max(MIN_PRE_LOGIN_TIMEOUT_MS,
+                maxPing * PRE_LOGIN_TIMEOUT_PING_FACTOR);
     }
 
     public void stop() {
         stopFlag = true;
+
+        Thread current = thread;
+        if (current != null && current != Thread.currentThread()) {
+            // Wake the thread from its sleep; otherwise shutdown waits out the interval.
+            current.interrupt();
+        }
     }
 
     public boolean isStopped() {
@@ -56,6 +83,7 @@ public class ServerMaintenanceTask implements Runnable {
 
     @Override
     public void run() {
+        thread = Thread.currentThread();
         log.debug("ServerMaintenanceTask thread running...");
 
         try {
@@ -64,6 +92,7 @@ public class ServerMaintenanceTask implements Runnable {
                     long sleepTime = Math.max(MIN_SLEEP_INTERVAL_MS, (long) maxPing * 3);
                     Thread.sleep(sleepTime);
                 } catch (InterruptedException e) {
+                    // stop() wakes the thread this way.
                     log.debug("Sleep interrupted", e);
                 }
 
@@ -82,6 +111,7 @@ public class ServerMaintenanceTask implements Runnable {
                 log.error("ServerMaintenanceTask thread caught unexpected exception: " + e, e);
             }
         } finally {
+            thread = null;
             log.debug("ServerMaintenanceTask thread exiting...");
         }
     }
@@ -135,12 +165,24 @@ public class ServerMaintenanceTask implements Runnable {
         }
     }
 
-    private MaintenanceAction checkUser(KailleraUserImpl user, int access) {
+    /**
+     * Decides what the maintenance pass should do with one user.
+     *
+     * @param user
+     *            the user to check
+     * @param access
+     *            the user's current access level
+     * @return the action to take
+     */
+    MaintenanceAction checkUser(KailleraUserImpl user, int access) {
         long now = System.currentTimeMillis();
 
         // Connection timeout (not logged in yet)
-        if (!user.isLoggedIn() && (now - user.getConnectTime()) > (maxPing * 15)) {
-            return MaintenanceAction.REMOVE_TIMEOUT;
+        if (!user.isLoggedIn()) {
+            long timeout = user.hasStartedLogin() ? connectTimeoutMillis : preLoginTimeoutMillis;
+            if ((now - user.getConnectTime()) > timeout) {
+                return MaintenanceAction.REMOVE_TIMEOUT;
+            }
         }
 
         // Keepalive timeout
@@ -176,7 +218,8 @@ public class ServerMaintenanceTask implements Runnable {
         }
     }
 
-    private enum MaintenanceAction {
+    /** What one maintenance pass decides to do with one user. */
+    enum MaintenanceAction {
         NONE, REMOVE_TIMEOUT, QUIT_KEEPALIVE, QUIT_IDLE, QUIT_BANNED, QUIT_EMULATOR_RESTRICTED
     }
 }

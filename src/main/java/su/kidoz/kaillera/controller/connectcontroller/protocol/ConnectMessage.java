@@ -7,10 +7,9 @@ import java.nio.charset.CharsetDecoder;
 
 import su.kidoz.kaillera.controller.messaging.ByteBufferMessage;
 import su.kidoz.kaillera.controller.messaging.MessageFormatException;
-import su.kidoz.util.EmuUtil;
 
 public abstract class ConnectMessage extends ByteBufferMessage {
-    public static Charset charset = Charset.forName("ISO-8859-1");
+    public static final Charset charset = Charset.forName("ISO-8859-1");
 
     protected abstract String getID();
 
@@ -38,7 +37,9 @@ public abstract class ConnectMessage extends ByteBufferMessage {
         }
 
         buffer.rewind();
+        // The bytes are left out of the message: any client can trigger this, and
+        // dumping them would multiply the cost of a junk datagram.
         throw new MessageFormatException(
-                "Unrecognized connect message: " + EmuUtil.dumpBuffer(buffer));
+                "Unrecognized connect message: " + buffer.remaining() + " bytes");
     }
 }
