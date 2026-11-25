@@ -2,8 +2,9 @@ package su.kidoz.kaillera.access.parser;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -51,7 +52,10 @@ public class AccessConfigParser {
         List<NameRule> emulatorRules = new ArrayList<>();
         int errorCount = 0;
 
-        try (BufferedReader reader = new BufferedReader(new FileReader(accessFile))) {
+        // UTF-8 whatever the platform default is: a rule may name a game or a user
+        // in any script.
+        try (BufferedReader reader = Files.newBufferedReader(accessFile.toPath(),
+                StandardCharsets.UTF_8)) {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (isCommentOrEmpty(line)) {
@@ -65,8 +69,12 @@ public class AccessConfigParser {
                     continue;
                 }
 
-                String type = tokens[0].trim().toLowerCase();
-                String remainder = line.substring(type.length() + 1);
+                // Split at the first comma rather than at the length of the trimmed
+                // type: with an indented line the two disagree, the access level is
+                // then read from the wrong offset, and the rule is silently dropped.
+                int firstComma = line.indexOf(',');
+                String type = line.substring(0, firstComma).trim().toLowerCase();
+                String remainder = line.substring(firstComma + 1);
                 StringTokenizer tokenizer = new StringTokenizer(remainder, ",");
 
                 try {

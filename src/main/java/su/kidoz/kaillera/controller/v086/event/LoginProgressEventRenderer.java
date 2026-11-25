@@ -101,7 +101,7 @@ public final class LoginProgressEventRenderer implements V086UserEventHandler {
         int access = event.getAccessLevel();
         if (access > AccessManager.ACCESS_NORMAL) {
             log.info("{} logged in successfully with {} access!", user,
-                    AccessManager.ACCESS_NAMES[access]);
+                    AccessManager.getAccessName(access));
         } else {
             log.info("{} logged in successfully", user);
         }

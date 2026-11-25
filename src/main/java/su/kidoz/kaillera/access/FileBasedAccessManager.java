@@ -19,6 +19,7 @@ import org.springframework.context.SmartLifecycle;
 
 import su.kidoz.kaillera.access.parser.AccessConfigParser;
 import su.kidoz.kaillera.access.parser.ParseResult;
+import su.kidoz.kaillera.access.rule.AddressRule;
 import su.kidoz.kaillera.access.store.AccessRuleStore;
 import su.kidoz.kaillera.access.store.TemporaryRuleStore;
 
@@ -29,16 +30,28 @@ import su.kidoz.kaillera.access.store.TemporaryRuleStore;
  * <p>
  * Runs a background thread that periodically:
  * <ul>
- * <li>Purges expired temporary rules
- * <li>Refreshes DNS resolutions
- * <li>Checks for config file changes (hot-reload)
+ * <li>Checks for config file changes and reloads them</li>
+ * <li>Purges expired temporary rules</li>
+ * <li>Refreshes DNS resolutions</li>
  * </ul>
+ * The access checks themselves never touch the disk or the resolver.
  */
 public class FileBasedAccessManager implements AccessManager, Runnable, SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(FileBasedAccessManager.class);
     private static final String DEFAULT_ACCESS_FILE = "access.cfg";
-    private static final int MAINTENANCE_INTERVAL_MS = 60_000;
+
+    /** How often the access file's modification time is compared. */
+    private static final long RELOAD_CHECK_INTERVAL_MS = 1_000;
+
+    /**
+     * How many reload checks pass between purges of temporary rules and DNS
+     * refreshes.
+     */
+    private static final int CHECKS_PER_MAINTENANCE = 60;
+
+    private static final String IPV4_LOOPBACK = "127.0.0.1";
+    private static final String IPV6_LOOPBACK = "0:0:0:0:0:0:0:1";
 
     private final EmuLinkerExecutor threadPool;
     private final AccessConfigParser parser;
@@ -49,7 +62,12 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
     private volatile boolean stopFlag = false;
 
     private File accessFile;
-    private long lastLoadModifiedTime = -1;
+
+    /**
+     * Modification time of the rule set that is loaded. Read and written by the
+     * manager thread, and once by the constructor.
+     */
+    private volatile long lastLoadModifiedTime = -1;
 
     public FileBasedAccessManager(EmuLinkerExecutor threadPool)
             throws NoSuchElementException, FileNotFoundException {
@@ -64,7 +82,7 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
         this.tempStore = new TemporaryRuleStore();
 
         resolveAccessFile(accessFilePath);
-        loadAccess();
+        loadAccess(true);
         // Thread is started via SmartLifecycle.start(), not in constructor
     }
 
@@ -174,21 +192,27 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
         log.debug("FileBasedAccessManager thread running...");
 
         try {
+            int checksUntilMaintenance = CHECKS_PER_MAINTENANCE;
             while (!stopFlag) {
                 try {
-                    Thread.sleep(MAINTENANCE_INTERVAL_MS);
+                    Thread.sleep(RELOAD_CHECK_INTERVAL_MS);
                 } catch (InterruptedException e) {
-                    log.error("Sleep Interrupted!", e);
+                    Thread.currentThread().interrupt();
+                    break;
                 }
 
                 if (stopFlag) {
                     break;
                 }
 
-                synchronized (this) {
+                reloadIfChanged();
+
+                if (--checksUntilMaintenance <= 0) {
+                    checksUntilMaintenance = CHECKS_PER_MAINTENANCE;
+                    // Neither step takes the manager monitor: a slow name lookup must
+                    // not stall the HELLO, login and chat checks that other threads make.
                     tempStore.purgeExpired();
                     ruleStore.refreshDns();
-                    checkReload();
                 }
             }
         } catch (Throwable e) {
@@ -201,26 +225,88 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
         }
     }
 
-    private void checkReload() {
-        if (accessFile != null && accessFile.lastModified() > lastLoadModifiedTime) {
-            loadAccess();
+    /**
+     * Reloads the access file when its modification time is newer than that of the
+     * loaded rule set.
+     *
+     * @return true if the file had changed and a reload was attempted
+     */
+    boolean reloadIfChanged() {
+        File file = accessFile;
+        if (file == null || file.lastModified() <= lastLoadModifiedTime) {
+            return false;
         }
+        loadAccess(false);
+        return true;
     }
 
-    private synchronized void loadAccess() {
-        if (accessFile == null) {
+    /**
+     * Parses the access file and swaps the result in. Runs without the manager
+     * monitor, so file and DNS access never block the access checks.
+     *
+     * @param initial
+     *            true for the load at startup, when there is no earlier rule set to
+     *            fall back on
+     */
+    private void loadAccess(boolean initial) {
+        File file = accessFile;
+        if (file == null) {
             return;
         }
 
         log.info("Reloading permissions...");
-        lastLoadModifiedTime = accessFile.lastModified();
-
+        // The time is read before and after parsing. A difference means the file was
+        // being written while it was read, so what was parsed may be incomplete.
+        long modifiedBefore = file.lastModified();
+        ParseResult result;
         try {
-            ParseResult result = parser.parse(accessFile);
-            ruleStore.update(result);
-            log.info("Loaded {} rules ({} errors)", result.totalRules(), result.errorCount());
+            result = parser.parse(file);
         } catch (IOException e) {
-            log.error("Failed to load access file: {}", e.getMessage(), e);
+            log.error("Failed to load access file, keeping the previous rules: {}", e.getMessage(),
+                    e);
+            return;
+        }
+        long modifiedAfter = file.lastModified();
+
+        if (!initial && modifiedAfter != modifiedBefore) {
+            // lastLoadModifiedTime is left alone, so the next check reads the file again.
+            log.warn("Access file changed while it was being read; the previous rules stay "
+                    + "active until it can be read in one piece");
+            return;
+        }
+
+        if (!initial && result.errorCount() > 0) {
+            // Lines that fail to parse are dropped. Applying the rest could silently
+            // remove a DENY rule, so the last rule set that parsed cleanly stays.
+            log.error("Keeping the previous access rules: {} line(s) in {} could not be parsed",
+                    result.errorCount(), file.getPath());
+            lastLoadModifiedTime = modifiedAfter;
+            return;
+        }
+
+        ruleStore.update(result);
+        lastLoadModifiedTime = modifiedBefore;
+        log.info("Loaded {} rules ({} errors)", result.totalRules(), result.errorCount());
+        warnAboutPrivilegedLoopbackRules(result);
+    }
+
+    /**
+     * A relay, proxy or port forwarder on the same host makes every client arrive
+     * from localhost, so a privileged rule for localhost hands that privilege to
+     * all of them.
+     *
+     * @param result
+     *            the rule set that was just loaded
+     */
+    private void warnAboutPrivilegedLoopbackRules(ParseResult result) {
+        for (AddressRule rule : result.userRules()) {
+            if (rule.getAccessLevel() > AccessManager.ACCESS_NORMAL
+                    && (rule.matches(IPV4_LOOPBACK) || rule.matches(IPV6_LOOPBACK))) {
+                log.warn("Access rule \"{}\" gives {} access to connections from localhost. "
+                        + "Every client comes from localhost when the server is reached through "
+                        + "a relay, proxy or port forwarder on the same host.", rule,
+                        AccessManager.getAccessName(rule.getAccessLevel()));
+            }
         }
     }
 
@@ -241,17 +327,21 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
 
     @Override
     public synchronized String getAnnouncement(InetAddress address) {
-        checkReload();
         return ruleStore.getUserAnnouncement(address.getHostAddress());
     }
 
     @Override
     public synchronized int getAccess(InetAddress address) {
-        checkReload();
         String userAddress = address.getHostAddress();
 
+        // A temporary ban counts here as well as in isAddressAllowed; otherwise the
+        // other sessions an address already has keep their normal access.
+        if (tempStore.isBanned(userAddress)) {
+            return AccessManager.ACCESS_BANNED;
+        }
+
         if (tempStore.hasTemporaryAdmin(userAddress)) {
-            return ACCESS_ADMIN;
+            return AccessManager.ACCESS_ADMIN;
         }
 
         return ruleStore.getUserAccessLevel(userAddress);
@@ -264,13 +354,11 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
 
     @Override
     public synchronized boolean isSilenced(InetAddress address) {
-        checkReload();
         return tempStore.isSilenced(address.getHostAddress());
     }
 
     @Override
     public synchronized boolean isAddressAllowed(InetAddress address) {
-        checkReload();
         String userAddress = address.getHostAddress();
 
         if (tempStore.isBanned(userAddress)) {
@@ -282,13 +370,11 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
 
     @Override
     public synchronized boolean isEmulatorAllowed(String emulator) {
-        checkReload();
         return ruleStore.isEmulatorAllowed(emulator);
     }
 
     @Override
     public synchronized boolean isGameAllowed(String game) {
-        checkReload();
         return ruleStore.isGameAllowed(game);
     }
 }

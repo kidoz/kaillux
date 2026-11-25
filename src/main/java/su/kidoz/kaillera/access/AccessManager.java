@@ -22,7 +22,22 @@ public interface AccessManager {
     int ACCESS_ELEVATED = 2;
     int ACCESS_ADMIN = 3;
 
-    String[] ACCESS_NAMES = {"Banned", "Normal", "Elevated", "Admin"};
+    /**
+     * Returns the name of an access level, or "Unknown(n)" for an invalid value.
+     *
+     * @param access
+     *            one of the ACCESS_ constants
+     * @return the display name of the access level
+     */
+    static String getAccessName(int access) {
+        return switch (access) {
+            case ACCESS_BANNED -> "Banned";
+            case ACCESS_NORMAL -> "Normal";
+            case ACCESS_ELEVATED -> "Elevated";
+            case ACCESS_ADMIN -> "Admin";
+            default -> "Unknown(" + access + ")";
+        };
+    }
 
     /**
      * Checks if address is allowed to connect.

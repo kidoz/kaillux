@@ -121,4 +121,12 @@ public final class AddressRule {
     public boolean hasDnsEntries() {
         return pattern.hasDnsEntries();
     }
+
+    @Override
+    public String toString() {
+        String effect = type == Type.USER
+                ? AccessManager.getAccessName(accessLevel)
+                : (allowed ? "allow" : "deny");
+        return type.name().toLowerCase() + " rule for " + pattern + " (" + effect + ")";
+    }
 }
