@@ -25,15 +25,9 @@ import su.kidoz.kaillera.model.impl.UserManager;
 import su.kidoz.kaillera.model.validation.LoginValidator;
 import su.kidoz.kaillera.service.AnnouncementService;
 import su.kidoz.kaillera.service.ChatModerationService;
-import su.kidoz.kaillera.service.CommunicationService;
-import su.kidoz.kaillera.service.GameInputService;
 import su.kidoz.kaillera.service.GameService;
-import su.kidoz.kaillera.service.ServerAdminService;
 import su.kidoz.kaillera.service.UserService;
-import su.kidoz.kaillera.service.impl.CommunicationServiceImpl;
-import su.kidoz.kaillera.service.impl.GameInputServiceImpl;
 import su.kidoz.kaillera.service.impl.GameServiceImpl;
-import su.kidoz.kaillera.service.impl.ServerAdminServiceImpl;
 import su.kidoz.kaillera.service.impl.UserServiceImpl;
 import su.kidoz.util.EmuLinkerExecutor;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -178,22 +172,6 @@ public class EmuLinkerConfig {
     @Bean
     public GameService gameService(KailleraServerImpl kailleraServer) {
         return new GameServiceImpl(kailleraServer);
-    }
-
-    @Bean
-    public CommunicationService communicationService(KailleraServerImpl kailleraServer) {
-        return new CommunicationServiceImpl(kailleraServer);
-    }
-
-    @Bean
-    public GameInputService gameInputService() {
-        return new GameInputServiceImpl();
-    }
-
-    @Bean
-    public ServerAdminService serverAdminService(KailleraServerImpl kailleraServer,
-            FileBasedAccessManager accessManager) {
-        return new ServerAdminServiceImpl(kailleraServer, accessManager);
     }
 
     @Bean
