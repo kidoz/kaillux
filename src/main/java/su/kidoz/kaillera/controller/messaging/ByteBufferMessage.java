@@ -10,11 +10,12 @@ import org.slf4j.LoggerFactory;
 public abstract class ByteBufferMessage {
     protected static final Logger log = LoggerFactory.getLogger(ByteBufferMessage.class);
 
-    // Default to UTF-8 for consistent cross-platform behavior.
-    // Can be overridden via -Demulinker.charset=<charset> system property.
-    public static Charset charset = StandardCharsets.UTF_8;
+    // UTF-8 unless -Demulinker.charset=<charset> names another charset, which
+    // keeps behavior the same on every platform.
+    public static final Charset charset = configuredCharset();
 
-    static {
+    private static Charset configuredCharset() {
+        Charset charset = StandardCharsets.UTF_8;
         String charsetName = System.getProperty("emulinker.charset");
         if (charsetName != null) {
             try {
@@ -30,6 +31,7 @@ public abstract class ByteBufferMessage {
         }
 
         log.info("Using character set: {}", charset.displayName());
+        return charset;
     }
 
     private ByteBuffer buffer;

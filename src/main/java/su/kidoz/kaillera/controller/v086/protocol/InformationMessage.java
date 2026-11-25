@@ -50,9 +50,7 @@ public class InformationMessage extends V086Message {
     }
 
     public int getBodyLength() {
-        // return (charset.encode(source).remaining() +
-        // charset.encode(message).remaining() + 2);
-        return (source.length() + message.length() + 2);
+        return (encodedLength(source) + encodedLength(message) + 2);
     }
 
     public void writeBodyTo(ByteBuffer buffer) {

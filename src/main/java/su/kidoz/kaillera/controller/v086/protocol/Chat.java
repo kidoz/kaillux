@@ -53,7 +53,6 @@ public abstract class Chat extends V086Message {
 
     private String userName;
     private String message;
-    private ByteBuffer body;
 
     public Chat(int messageNumber, String userName, String message) throws MessageFormatException {
         super(messageNumber);
@@ -79,9 +78,7 @@ public abstract class Chat extends V086Message {
     public abstract String toString();
 
     public int getBodyLength() {
-        // return (charset.encode(userName).remaining() +
-        // charset.encode(message).remaining() + 2);
-        return (userName.length() + message.length() + 2);
+        return (encodedLength(userName) + encodedLength(message) + 2);
     }
 
     public void writeBodyTo(ByteBuffer buffer) {

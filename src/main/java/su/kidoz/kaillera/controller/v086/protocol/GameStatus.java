@@ -78,7 +78,7 @@ public class GameStatus extends V086Message {
 
     public String toString() {
         return getInfoString() + "[gameID=" + gameID + " gameStatus="
-                + su.kidoz.kaillera.model.KailleraGame.STATUS_NAMES[gameStatus] + " numPlayers="
+                + su.kidoz.kaillera.model.KailleraGame.getStatusName(gameStatus) + " numPlayers="
                 + numPlayers + " maxPlayers=" + maxPlayers + "]";
     }
 

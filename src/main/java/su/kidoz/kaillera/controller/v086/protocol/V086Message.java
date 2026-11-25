@@ -206,6 +206,18 @@ public abstract class V086Message extends ByteBufferMessage {
 
     public abstract int getBodyLength();
 
+    /**
+     * Length in bytes of a string encoded in the wire charset.
+     *
+     * <p>
+     * Length fields and buffer space must be budgeted in encoded bytes: counting
+     * UTF-16 chars under-reports multi-byte text, which puts a wrong length on the
+     * wire and lets the message overflow the output buffer.
+     */
+    protected static int encodedLength(String s) {
+        return s == null ? 0 : s.getBytes(charset).length;
+    }
+
     protected String getInfoString() {
         return (getNumber() + ":" + EmuUtil.byteToHex(getID()) + "/" + getDescription());
     }
@@ -222,7 +234,6 @@ public abstract class V086Message extends ByteBufferMessage {
             UnsignedUtil.putUnsignedShort(buffer, getNumber());
             // there no realistic reason to use unsigned here since a single packet can't be
             // that large
-            buffer.mark();
             UnsignedUtil.putUnsignedShort(buffer, len);
             // buffer.putShort((short)getLength());
             buffer.put(getID());

@@ -153,7 +153,7 @@ public class ServerStatus extends V086Message {
 
             byte status = buffer.get();
 
-            games.add(new Game(romName.toString(), gameID, clientType, userName, players, status));
+            games.add(new Game(romName, gameID, clientType, userName, players, status));
         }
 
         return new ServerStatus(messageNumber, users, games);
@@ -217,15 +217,14 @@ public class ServerStatus extends V086Message {
 
         public String toString() {
             return "[userName=" + userName + " ping=" + ping + " status="
-                    + su.kidoz.kaillera.model.KailleraUser.STATUS_NAMES[status] + " userID="
+                    + su.kidoz.kaillera.model.KailleraUser.getStatusName(status) + " userID="
                     + userID + " connectionType="
                     + su.kidoz.kaillera.model.KailleraUser.getConnectionTypeName(connectionType)
                     + "]";
         }
 
         public int getLength() {
-            // return (charset.encode(userName).remaining() + 9);
-            return (userName.length() + 9);
+            return (encodedLength(userName) + 9);
         }
 
         public void writeTo(ByteBuffer buffer) {
@@ -302,16 +301,12 @@ public class ServerStatus extends V086Message {
         public String toString() {
             return "[romName=" + romName + " gameID=" + gameID + " clientType=" + clientType
                     + " userName=" + userName + " players=" + players + " status="
-                    + su.kidoz.kaillera.model.KailleraGame.STATUS_NAMES[status] + "]";
+                    + su.kidoz.kaillera.model.KailleraGame.getStatusName(status) + "]";
         }
 
         public int getLength() {
-            // return (charset.encode(romName).remaining() + 1 + 4 +
-            // charset.encode(clientType).remaining() + 1 +
-            // charset.encode(userName).remaining() + 1 +
-            // charset.encode(players).remaining() + 1 + 1);
-            return (romName.length() + 1 + 4 + clientType.length() + 1 + userName.length() + 1
-                    + players.length() + 1 + 1);
+            return (encodedLength(romName) + 1 + 4 + encodedLength(clientType) + 1
+                    + encodedLength(userName) + 1 + encodedLength(players) + 1 + 1);
         }
 
         public void writeTo(ByteBuffer buffer) {

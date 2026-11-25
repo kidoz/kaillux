@@ -43,8 +43,7 @@ public abstract class PlayerDrop extends V086Message {
     }
 
     public int getBodyLength() {
-        // return (charset.encode(userName).remaining() + 2);
-        return (userName.length() + 2);
+        return (encodedLength(userName) + 2);
     }
 
     public void writeBodyTo(ByteBuffer buffer) {
