@@ -29,7 +29,8 @@ services:
       # RELAY_BACKEND_HOST: "backend-server"
       # RELAY_BACKEND_PORT: "27888"
     # Uses the image's bundled access rules by default. To use custom rules,
-    # copy src/main/resources/access.cfg to ./access.cfg and uncomment:
+    # copy src/main/resources/access.cfg to ./access.cfg and uncomment. The
+    # container runs as UID 10001, so the file must be readable by that user.
     # volumes:
     #   - type: bind
     #     source: ./access.cfg
@@ -37,6 +38,17 @@ services:
     #     read_only: true
     #     bind:
     #       create_host_path: false
+    # The image runs as an unprivileged user that binds only ports above 1024.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # The server logs to the container's stdout; keep it from filling the disk.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
       interval: 30s

@@ -8,8 +8,12 @@ Type=simple
 User=kaillux
 Group=kaillux
 
-# Java options
-Environment="KAILLUX_OPTS=-Xms64m -Xmx256m"
+# Java options come from the launcher's defaults (-Xms64m -Xmx256m and
+# -XX:+UseCompactObjectHeaders). To change them, add a drop-in instead of
+# editing this file:
+#   systemctl edit kaillux
+#   [Service]
+#   Environment="KAILLUX_OPTS=-Xms64m -Xmx512m -XX:+UseCompactObjectHeaders"
 
 # Working directory for logs
 WorkingDirectory=/var/lib/kaillux
@@ -32,6 +36,8 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
+# The server binds only ports above 1024, so it needs no capability at all.
+CapabilityBoundingSet=
 
 # Allow write to working directory and logs
 ReadWritePaths=/var/lib/kaillux

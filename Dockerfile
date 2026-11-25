@@ -41,6 +41,11 @@ RUN ./gradlew bootJar --no-daemon
 # Run stage
 FROM eclipse-temurin:25-jre-noble@sha256:d8dd4342b7dbb5a9c06d0499eecca86315346acc6a20026080642610344ceb2c
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+# The server binds only ports above 1024 and writes nothing to disk, so it does
+# not need root. A fixed UID lets operators make a bind-mounted access.cfg
+# readable for it.
+RUN groupadd --gid 10001 kaillux \
+    && useradd --uid 10001 --gid kaillux --no-create-home --shell /usr/sbin/nologin kaillux
 WORKDIR /app
 
 # Copy the executable jar from the build stage
@@ -58,6 +63,8 @@ EXPOSE 8080/tcp
 EXPOSE 27888/udp
 # Kaillera Data Ports (default range)
 EXPOSE 27889-27924/udp
+
+USER kaillux
 
 # Java 25: Enable Compact Object Headers for reduced memory footprint
 ENTRYPOINT ["java", "-XX:+UseCompactObjectHeaders", "-jar", "kaillux.jar"]

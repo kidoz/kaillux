@@ -11,8 +11,8 @@ post_install() {
     echo ""
     echo "Default ports:"
     echo "  - UDP 27888 (connect)"
-    echo "  - UDP 27889-27899 (game sessions)"
-    echo "  - TCP 8080 (admin API, metrics)"
+    echo "  - UDP 27889-27924 (game sessions; grows with server.max-users)"
+    echo "  - TCP 8080 (admin API, metrics; bind it to a private interface)"
     echo ""
     echo "Edit /etc/kaillux/application.properties to configure."
 }

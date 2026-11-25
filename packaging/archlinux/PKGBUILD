@@ -17,9 +17,9 @@ source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz"
         'kaillux.sysusers'
         'kaillux.tmpfiles')
 sha256sums=('SKIP'
-            'SKIP'
-            'SKIP'
-            'SKIP')
+            '9966e673e0c37df9dd8cf97e6815542e798c13a9f4799cfa7071b78527a9519a'
+            '1c38359aadd28441cb93feb1d171e50a31c582c3529b1184124f55ef5bd49918'
+            '1f747d882125eb319030e93866caf14b9f6c34032dfa3cae8b5ed5d2dae6f75b')
 
 # For local development, use this instead:
 # source=("git+file:///path/to/local/kaillux")

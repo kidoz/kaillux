@@ -45,8 +45,9 @@ e2e-test:
     ./gradlew test --tests "su.kidoz.kaillera.protocol.ProtocolE2ETest"
 
 # Admin UI commands
+# npm ci installs exactly what package-lock.json pins; npm install could rewrite it.
 admin-install:
-    cd src/main/resources/static/admin && npm install
+    cd src/main/resources/static/admin && npm ci
 
 admin-dev:
     cd src/main/resources/static/admin && npm run dev
@@ -71,5 +72,7 @@ docker-build:
     docker build -t kaillux .
 
 # Run application in Docker
+# The admin port stays on loopback: the dashboard sends its password in every
+# request over plain HTTP. Publish 8080 on other interfaces only behind TLS.
 docker-run:
-    docker run -p 8080:8080 -p 27888:27888/udp -p 27889-27924:27889-27924/udp kaillux
+    docker run -p 127.0.0.1:8080:8080 -p 27888:27888/udp -p 27889-27924:27889-27924/udp kaillux
