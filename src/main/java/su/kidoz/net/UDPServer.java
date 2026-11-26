@@ -200,7 +200,7 @@ public abstract class UDPServer implements Executable {
                     }
                 }
             }
-        } catch (Throwable e) {
+        } catch (RuntimeException e) {
             log.error("UDPServer on port " + getBindPort() + " caught unexpected exception!", e);
             stop();
             afterUnexpectedExit();

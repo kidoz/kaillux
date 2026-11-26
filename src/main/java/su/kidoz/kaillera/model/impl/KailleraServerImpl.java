@@ -704,7 +704,7 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
                     serverConfig.getMaxPing(), serverConfig.getKeepAliveTimeout(),
                     serverConfig.getIdleTimeout(), this::handleQuitRequest);
             maintenanceTask.run();
-        } catch (Throwable e) {
+        } catch (RuntimeException e) {
             if (!stopFlag)
                 log.error("KailleraServer thread caught unexpected exception: " + e, e);
         } finally {

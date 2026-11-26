@@ -215,7 +215,7 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
                     ruleStore.refreshDns();
                 }
             }
-        } catch (Throwable e) {
+        } catch (RuntimeException e) {
             if (!stopFlag) {
                 log.error("FileBasedAccessManager thread caught unexpected exception: " + e, e);
             }

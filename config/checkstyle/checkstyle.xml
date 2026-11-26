@@ -36,7 +36,6 @@
         </module>
         <module name="IllegalCatch">
             <property name="illegalClassNames" value="Error, Throwable"/>
-            <property name="severity" value="info"/>
         </module>
 
         <!-- Unnecessary Code -->
@@ -48,9 +47,6 @@
         <module name="AvoidNoArgumentSuperConstructorCall"/>
 
         <!-- Imports - Clean Dependencies -->
-        <module name="AvoidStarImport">
-            <property name="severity" value="info"/>
-        </module>
         <module name="IllegalImport"/>
         <module name="RedundantImport"/>
         <module name="UnusedImports"/>
@@ -75,12 +71,6 @@
 
         <!-- Modifiers -->
         <module name="FinalClass"/>
-        <module name="FinalLocalVariable">
-            <property name="severity" value="info"/>
-        </module>
-        <module name="FinalParameters">
-            <property name="severity" value="info"/>
-        </module>
         <module name="ModifierOrder"/>
         <module name="RedundantModifier"/>
 

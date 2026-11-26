@@ -268,7 +268,7 @@ public abstract class MultiAddressUDPServer implements Executable {
                                 e.getMessage());
                     }
                 }
-            } catch (Throwable e) {
+            } catch (RuntimeException e) {
                 log.error("Unexpected error on {}", bindAddress.getHostAddress(), e);
                 stop();
             } finally {

@@ -720,7 +720,7 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
             }
         } catch (InterruptedException e) {
             log.error(this + " thread interrupted!");
-        } catch (Throwable e) {
+        } catch (RuntimeException e) {
             log.error(this + " thread caught unexpected exception!", e);
         } finally {
             isRunning = false;

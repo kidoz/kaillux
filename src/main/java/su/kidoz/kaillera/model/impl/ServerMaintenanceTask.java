@@ -106,7 +106,7 @@ public class ServerMaintenanceTask implements Runnable {
 
                 performMaintenance();
             }
-        } catch (Throwable e) {
+        } catch (RuntimeException e) {
             if (!stopFlag) {
                 log.error("ServerMaintenanceTask thread caught unexpected exception: " + e, e);
             }
