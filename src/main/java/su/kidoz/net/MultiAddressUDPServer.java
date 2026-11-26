@@ -78,7 +78,18 @@ public abstract class MultiAddressUDPServer implements Executable {
             log.debug("{} start request ignored: already running!", this);
             return;
         }
+        if (handlers.isEmpty()) {
+            log.warn("{} start request ignored: not bound", this);
+            return;
+        }
+
+        // Latch the state before any worker runs. A concurrent stop() must see a
+        // running server and perform cleanup instead of returning early.
         stopFlag = false;
+        isRunning = true;
+        for (ChannelHandler handler : handlers) {
+            executeHandler(handler);
+        }
     }
 
     protected boolean getStopFlag() {
@@ -87,9 +98,12 @@ public abstract class MultiAddressUDPServer implements Executable {
 
     public synchronized void stop() {
         stopFlag = true;
+        isRunning = false;
         for (ChannelHandler handler : handlers) {
             handler.stop();
         }
+        // Channels cannot be rebound after close. A later start() binds a fresh set.
+        handlers.clear();
     }
 
     protected synchronized void bind(int port, List<InetAddress> addresses) throws BindException {
@@ -99,13 +113,20 @@ public abstract class MultiAddressUDPServer implements Executable {
 
         this.bindPort = port;
 
-        for (InetAddress address : addresses) {
-            ChannelHandler handler = new ChannelHandler(address);
-            handler.bind(port);
-            handlers.add(handler);
+        try {
+            for (InetAddress address : addresses) {
+                ChannelHandler handler = new ChannelHandler(address);
+                handler.bind(port);
+                handlers.add(handler);
+            }
+        } catch (BindException e) {
+            // Do not leave earlier address families bound when a later bind fails.
+            for (ChannelHandler handler : handlers) {
+                handler.stop();
+            }
+            handlers.clear();
+            throw e;
         }
-
-        this.start();
     }
 
     protected abstract ByteBuffer getBuffer();
@@ -158,11 +179,7 @@ public abstract class MultiAddressUDPServer implements Executable {
 
     @Override
     public void run() {
-        // Start all handlers
-        isRunning = true;
-        for (ChannelHandler handler : handlers) {
-            executeHandler(handler);
-        }
+        start();
     }
 
     private class ChannelHandler implements Runnable {
@@ -195,6 +212,9 @@ public abstract class MultiAddressUDPServer implements Executable {
 
                 log.info("Bound to {}:{}", bindAddress.getHostAddress(), port);
             } catch (IOException e) {
+                // The channel was opened but not bound; close it or the failed
+                // attempt leaks a descriptor on every retry.
+                stop();
                 throw new BindException(
                         "Failed to bind to " + bindAddress.getHostAddress() + ":" + port, port, e);
             }
@@ -270,7 +290,9 @@ public abstract class MultiAddressUDPServer implements Executable {
                 }
             } catch (RuntimeException e) {
                 log.error("Unexpected error on {}", bindAddress.getHostAddress(), e);
-                stop();
+                // Stop the whole server: leaving isRunning true would report a
+                // healthy listener while one address family is dead.
+                MultiAddressUDPServer.this.stop();
             } finally {
                 log.debug("Handler thread exiting for {}", bindAddress.getHostAddress());
             }

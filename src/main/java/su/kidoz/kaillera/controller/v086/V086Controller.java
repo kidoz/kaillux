@@ -59,7 +59,25 @@ public final class V086Controller implements KailleraServerController, SmartLife
 
         this.portRangeStart = v086Config.getPortRangeStart();
         this.extraPorts = v086Config.getExtraPorts();
-        int portCount = serverConfig.getMaxUsers() + extraPorts + 1;
+        int maxUsers = serverConfig.getMaxUsers();
+        int maxConnecting = serverConfig.getMaxConnecting();
+        // A zero max-users means no logged-in policy cap, but every session still
+        // holds one socket. Size the pool explicitly or derive it from the real
+        // admission limits instead of silently capping at extra-ports.
+        int baseSessions = maxUsers > 0 ? maxUsers : 1_000;
+        int portCount = v086Config.getMaxSessions() > 0
+                ? v086Config.getMaxSessions()
+                : baseSessions + maxConnecting + extraPorts + 1;
+        if (maxUsers == 0) {
+            log.warn(
+                    "server.max-users=0: concurrent sessions are bounded by the {} available "
+                            + "data ports. Set controllers.v086.max-sessions to change the pool.",
+                    portCount);
+        }
+        if (portCount > 65535 - portRangeStart + 1) {
+            throw new IllegalStateException("Data port range " + portRangeStart + " + " + portCount
+                    + " exceeds 65535; lower controllers.v086.max-sessions");
+        }
         this.portAllocator = new PortAllocatorImpl(portRangeStart, portCount);
         int maxPort = portRangeStart + portCount - 1;
 
@@ -153,10 +171,23 @@ public final class V086Controller implements KailleraServerController, SmartLife
         // Select bind address matching client's address family (IPv4 or IPv6)
         InetAddress bindAddress = selectBindAddress(clientSocketAddress.getAddress());
 
-        int boundPort = -1;
-        int bindAttempts = 0;
         V086ClientHandler clientHandler = new V086ClientHandler(clientSocketAddress, this,
                 bufferSize, threadPool, portAllocator, server, actionRouter);
+
+        // Run admission before allocating a socket. A spoofed HELLO that will be
+        // denied must not cost a bind plus handler buffers.
+        KailleraUser user;
+        try {
+            user = server.newConnection(clientSocketAddress, protocol,
+                    clientHandler.getEventDispatcher());
+        } catch (NewConnectionException e) {
+            // Catches both NewConnectionException and ServerFullException
+            clientHandler.stop();
+            throw e;
+        }
+
+        int boundPort = -1;
+        int bindAttempts = 0;
         while (bindAttempts++ < 5) {
             OptionalInt portOpt = portAllocator.allocate();
             if (portOpt.isEmpty()) {
@@ -189,22 +220,35 @@ public final class V086Controller implements KailleraServerController, SmartLife
         }
 
         if (boundPort < 0) {
-            clientHandler.stop();
+            discardConnection(user, clientHandler);
             throw new NewConnectionException("Failed to bind!");
         }
 
-        KailleraUser user;
-        try {
-            user = server.newConnection(clientSocketAddress, protocol,
-                    clientHandler.getEventDispatcher());
-        } catch (NewConnectionException e) {
-            // Catches both NewConnectionException and ServerFullException (subclass)
-            clientHandler.stop();
-            throw e;
-        }
+        // Serialize handler publication with stop(). Without this, a connection
+        // that passed the initial isRunning check could bind and register after
+        // stop() cleared the map, leaving its socket unmanaged.
+        synchronized (this) {
+            if (!isRunning) {
+                discardConnection(user, clientHandler);
+                throw new NewConnectionException("Controller is not running");
+            }
 
-        clientHandler.start(user);
+            clientHandler.start(user);
+        }
         return boundPort;
+    }
+
+    /**
+     * Removes a user created for a connection that could not be completed. Not
+     * logged in yet, so quit() only removes it from the user list.
+     */
+    private void discardConnection(KailleraUser user, V086ClientHandler clientHandler) {
+        try {
+            server.quit(user, "");
+        } catch (Exception e) {
+            log.debug("Failed to remove discarded connection {}: {}", user, e.getMessage());
+        }
+        clientHandler.stop();
     }
 
     private InetAddress selectBindAddress(InetAddress clientAddress) {

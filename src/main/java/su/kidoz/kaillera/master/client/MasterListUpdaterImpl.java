@@ -80,7 +80,14 @@ public class MasterListUpdaterImpl implements MasterListUpdater, Runnable, Smart
             log.debug("MasterListUpdater thread starting (ThreadPool:" + threadPool.getActiveCount()
                     + "/" + threadPool.getPoolSize() + ")");
             stopFlag = false;
-            threadPool.execute(this);
+            isRunning = true;
+            try {
+                threadPool.execute(this);
+            } catch (RuntimeException e) {
+                isRunning = false;
+                stopFlag = true;
+                throw e;
+            }
             log.info("MasterListUpdater started");
         } else {
             log.info("MasterListUpdater not started (no master servers configured)");
@@ -91,12 +98,8 @@ public class MasterListUpdaterImpl implements MasterListUpdater, Runnable, Smart
     public synchronized void stop() {
         log.debug("MasterListUpdater thread received stop request!");
 
-        if (!isRunning()) {
-            log.debug("MasterListUpdater thread stop request ignored: not running!");
-            return;
-        }
-
         stopFlag = true;
+        isRunning = false;
         log.info("MasterListUpdater stopped");
     }
 
@@ -108,7 +111,6 @@ public class MasterListUpdaterImpl implements MasterListUpdater, Runnable, Smart
 
     @Override
     public void run() {
-        isRunning = true;
         log.debug("MasterListUpdater thread running...");
 
         try {

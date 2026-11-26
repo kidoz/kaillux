@@ -164,6 +164,7 @@ class ProtocolE2ETest {
         KailleraServerController[] controllers = new KailleraServerController[]{v086Controller};
         connectController = new ConnectController(executor, controllers, new TestAccessManager(),
                 controllersConfig);
+        connectController.start();
 
         log.info("E2E test server started on port {}", TEST_PORT);
     }
@@ -435,8 +436,10 @@ class ProtocolE2ETest {
                     "Player should receive both game chat messages");
             // The two clients' chats are processed by independent server threads, so
             // only the contents are deterministic, not their order.
-            assertTrue(owner.getGameChatMessages().contains("E2EGameOwner: good luck"));
-            assertTrue(owner.getGameChatMessages().contains("E2EGamePlayer: gg"));
+            assertTrue(owner.getGameChatMessages().contains("E2EGameOwner: good luck"),
+                    "owner messages: " + owner.getGameChatMessages());
+            assertTrue(owner.getGameChatMessages().contains("E2EGamePlayer: gg"),
+                    "owner messages: " + owner.getGameChatMessages());
 
             player.dropGame();
             assertTrue(owner.waitForDroppedPlayer(TIMEOUT_MS),

@@ -26,6 +26,7 @@ import su.kidoz.kaillera.model.exception.ServerFullException;
 import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.net.BindException;
 import su.kidoz.net.MultiAddressUDPServer;
+import su.kidoz.util.AddressRateLimiter;
 import su.kidoz.util.EmuLinkerExecutor;
 import su.kidoz.util.EmuUtil;
 import su.kidoz.util.ThrottledLogger;
@@ -38,6 +39,9 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
 
     /** Most bytes of a junk datagram the DEBUG log shows. */
     private static final int DUMP_LIMIT_BYTES = 64;
+
+    /** PING answers allowed per source address per second. */
+    private static final int PING_RATE_PER_SECOND = 20;
 
     // Anything on the internet can send to the connect port, including with a
     // spoofed source, so these events may not be written once per datagram.
@@ -53,6 +57,8 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
     private final Map<String, KailleraServerController> controllersMap;
 
     private final int bufferSize;
+    private final int connectPort;
+    private final List<InetAddress> connectBindAddresses;
 
     // One buffer per receive thread. A direct buffer per datagram on the public
     // connect port turns a flood into allocation pressure.
@@ -67,6 +73,8 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
     private final AtomicInteger failedToStartCount = new AtomicInteger(0);
     private final AtomicInteger connectedCount = new AtomicInteger(0);
     private final AtomicInteger pingCount = new AtomicInteger(0);
+    private final AtomicInteger pingRateLimitedCount = new AtomicInteger(0);
+    private final AddressRateLimiter pingLimiter = new AddressRateLimiter();
 
     public ConnectController(EmuLinkerExecutor threadPool,
             KailleraServerController[] controllersArray, AccessManager accessManager,
@@ -77,12 +85,12 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
         this.accessManager = accessManager;
         setExecutor(threadPool);
 
-        int port = config.getConnect().getPort();
+        this.connectPort = config.getConnect().getPort();
         int connectBufferSize = config.getConnect().getBufferSize();
         this.bufferSize = connectBufferSize;
         this.receiveBuffer = ThreadLocal
                 .withInitial(() -> ByteBufferMessage.getBuffer(connectBufferSize));
-        List<InetAddress> bindAddresses = config.getParsedBindAddresses();
+        this.connectBindAddresses = config.getParsedBindAddresses();
 
         controllersMap = new HashMap<String, KailleraServerController>();
         for (KailleraServerController controller : controllersArray) {
@@ -93,10 +101,8 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
             }
         }
 
-        super.bind(port, bindAddresses);
-
-        log.info("Ready to accept connections on port {} (addresses: {})", port,
-                bindAddresses.stream().map(InetAddress::getHostAddress).toList());
+        log.info("Connect port {} configured (addresses: {})", connectPort,
+                connectBindAddresses.stream().map(InetAddress::getHostAddress).toList());
     }
 
     public KailleraServerController getController(String clientType) {
@@ -147,6 +153,10 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
         return pingCount.get();
     }
 
+    public int getPingRateLimitedCount() {
+        return pingRateLimitedCount.get();
+    }
+
     protected ByteBuffer getBuffer() {
         ByteBuffer buffer = receiveBuffer.get();
         buffer.clear();
@@ -171,20 +181,26 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
             return;
         }
 
+        // Binding belongs to the lifecycle start, not the constructor: traffic must
+        // not reach the connect port before the protocol controllers are running.
+        if (!isBound()) {
+            try {
+                super.bind(connectPort, connectBindAddresses);
+            } catch (BindException e) {
+                throw new IllegalStateException("Failed to bind connect port " + connectPort, e);
+            }
+        }
+
         super.start();
         startTime.set(System.currentTimeMillis());
         log.debug(this + " Starting handlers (ThreadPool:" + threadPool.getActiveCount() + "/"
                 + threadPool.getPoolSize() + ")");
-        // run() starts all channel handlers using the executor
-        this.run();
         log.info("ConnectController started on port " + getBindPort());
     }
 
     @Override
     public synchronized void stop() {
         super.stop();
-        for (KailleraServerController controller : controllersMap.values())
-            controller.stop();
         log.info("ConnectController stopped");
     }
 
@@ -229,6 +245,12 @@ public class ConnectController extends MultiAddressUDPServer implements SmartLif
         // structure, so I'm going to handle it all in this class alone
 
         if (inMessage instanceof ConnectMessage_PING) {
+            // PING is answered before access checks. Without a budget it is a free
+            // reflector and a parser workload for any spoofed source.
+            if (!pingLimiter.allow(fromSocketAddress.getAddress(), PING_RATE_PER_SECOND)) {
+                pingRateLimitedCount.incrementAndGet();
+                return;
+            }
             pingCount.incrementAndGet();
             log.debug("Ping from: " + EmuUtil.formatSocketAddress(fromSocketAddress));
             send(new ConnectMessage_PONG(), fromSocketAddress);

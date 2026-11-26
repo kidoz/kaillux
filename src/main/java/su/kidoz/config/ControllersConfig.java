@@ -114,6 +114,13 @@ public class ControllersConfig {
         @Min(0)
         private int extraPorts = 10;
 
+        /**
+         * Explicit data-socket pool size. Zero derives it from server.max-users,
+         * server.max-connecting, and extra-ports.
+         */
+        @Min(0)
+        private int maxSessions = 0;
+
         @Min(1)
         private int bufferSize = 2048;
 
@@ -134,6 +141,14 @@ public class ControllersConfig {
 
         public void setExtraPorts(int extraPorts) {
             this.extraPorts = extraPorts;
+        }
+
+        public int getMaxSessions() {
+            return maxSessions;
+        }
+
+        public void setMaxSessions(int maxSessions) {
+            this.maxSessions = maxSessions;
         }
 
         public int getBufferSize() {

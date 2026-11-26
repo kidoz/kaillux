@@ -102,9 +102,10 @@ class ConnectControllerThreadSafetyTest {
         int expected = senders * datagramsPerSender;
         assertEquals(expected, controller.getRequestCount() - requestsBefore,
                 "every datagram must be counted once");
-        assertEquals(expected, controller.getPingCount(), "every PING must be recognised");
-        assertEquals(expected, controller.replies.get() - repliesBefore,
-                "every PING must be answered with one PONG");
+        assertEquals(expected, controller.getPingCount() + controller.getPingRateLimitedCount(),
+                "every PING must be counted exactly once, answered or limited");
+        assertEquals(controller.getPingCount(), controller.replies.get() - repliesBefore,
+                "every accepted PING must be answered with one PONG");
     }
 
     @Test
