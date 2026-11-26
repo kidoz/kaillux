@@ -1,7 +1,7 @@
 # Kaillux
 
 ![Java](https://img.shields.io/badge/Java-25-007396?logo=java&logoColor=white)
-![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.1.1-6DB33F?logo=springboot&logoColor=white)
+![Spring Boot](https://img.shields.io/badge/Spring%20Boot-4.2.0-6DB33F?logo=springboot&logoColor=white)
 ![Gradle](https://img.shields.io/badge/Gradle-9.x-02303A?logo=gradle&logoColor=white)
 ![License](https://img.shields.io/badge/License-GPL--2.0-blue)
 
