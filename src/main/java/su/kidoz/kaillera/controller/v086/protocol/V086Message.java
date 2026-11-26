@@ -177,22 +177,30 @@ import su.kidoz.util.UnsignedUtil;
  */
 public abstract class V086Message extends ByteBufferMessage {
     protected int number;
-    protected byte messageType;
 
     protected V086Message(int number) throws MessageFormatException {
         if (number < 0 || number > 0xFFFF)
             throw new MessageFormatException(
                     "Invalid " + getDescription() + " format: Invalid message number: " + number);
 
-        if (messageType < 0 || messageType > 0x17)
-            throw new MessageFormatException("Invalid " + getDescription()
-                    + " format: Invalid message type: " + messageType);
-
         this.number = number;
     }
 
     public int getNumber() {
         return number;
+    }
+
+    /**
+     * Sets the wire sequence number. The client handler assigns this under its send
+     * lock so allocation and ordering cannot diverge between threads.
+     *
+     * @param number
+     *            the 16-bit unsigned message number
+     */
+    public void setNumber(int number) {
+        if (number < 0 || number > 0xFFFF)
+            throw new IllegalArgumentException("Invalid message number: " + number);
+        this.number = number;
     }
 
     public abstract byte getID();

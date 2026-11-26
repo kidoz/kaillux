@@ -44,7 +44,7 @@ public final class GameDataCommandAction implements V086Action {
             throws FatalActionException {
         try {
             byte[] data = ((GameData) message).getGameData();
-            clientHandler.getClientGameDataCache().add(data);
+            clientHandler.addClientGameData(data);
             clientHandler.getUser().addGameData(data);
         } catch (GameDataException e) {
             log.debug("Game data error: " + e.getMessage());

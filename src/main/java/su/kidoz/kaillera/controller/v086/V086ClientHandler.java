@@ -4,6 +4,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.function.IntPredicate;
 
 import su.kidoz.kaillera.controller.messaging.MessageFormatException;
 import su.kidoz.kaillera.controller.messaging.ParseException;
@@ -13,8 +14,20 @@ import su.kidoz.kaillera.controller.v086.action.V086Action;
 import su.kidoz.kaillera.controller.v086.action.V086GameEventHandler;
 import su.kidoz.kaillera.controller.v086.action.V086ServerEventHandler;
 import su.kidoz.kaillera.controller.v086.action.V086UserEventHandler;
+import su.kidoz.kaillera.controller.v086.protocol.AllReady;
+import su.kidoz.kaillera.controller.v086.protocol.CachedGameData;
+import su.kidoz.kaillera.controller.v086.protocol.Chat;
 import su.kidoz.kaillera.controller.v086.protocol.ClientACK;
+import su.kidoz.kaillera.controller.v086.protocol.CreateGame;
+import su.kidoz.kaillera.controller.v086.protocol.GameChat;
+import su.kidoz.kaillera.controller.v086.protocol.GameData;
+import su.kidoz.kaillera.controller.v086.protocol.GameKick;
+import su.kidoz.kaillera.controller.v086.protocol.JoinGame;
+import su.kidoz.kaillera.controller.v086.protocol.KeepAlive;
+import su.kidoz.kaillera.controller.v086.protocol.PlayerDrop;
 import su.kidoz.kaillera.controller.v086.protocol.Quit;
+import su.kidoz.kaillera.controller.v086.protocol.QuitGame;
+import su.kidoz.kaillera.controller.v086.protocol.StartGame;
 import su.kidoz.kaillera.controller.v086.protocol.UserInformation;
 import su.kidoz.kaillera.controller.v086.protocol.V086Bundle;
 import su.kidoz.kaillera.controller.v086.protocol.V086BundleFormatException;
@@ -48,6 +61,17 @@ import org.slf4j.LoggerFactory;
 public final class V086ClientHandler extends PrivateUDPServer implements KailleraEventListener {
     private static final Logger log = LoggerFactory.getLogger(V086ClientHandler.class);
     private static final int MAX_BUNDLE_SIZE = 5;
+
+    // A client may only send these message types. Server-only bodies (status,
+    // player lists, rejected/accepted notifications) must never be parsed from
+    // client input: their parsers trust counts and sizes a client controls.
+    private static final IntPredicate CLIENT_MESSAGE_TYPES = type -> switch (type) {
+        case Quit.ID, UserInformation.ID, ClientACK.ID, Chat.ID, GameChat.ID, KeepAlive.ID,
+                CreateGame.ID, QuitGame.ID, JoinGame.ID, GameKick.ID, StartGame.ID, GameData.ID,
+                CachedGameData.ID, PlayerDrop.ID, AllReady.ID ->
+            true;
+        default -> false;
+    };
     // A client chooses how many bad bundles and failing commands it sends, so
     // these events may not be written once per packet.
     private static final ThrottledLogger MALFORMED_BUNDLE_LOG = new ThrottledLogger(log,
@@ -56,6 +80,8 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
             "unexpected client bundle exception");
     private static final ThrottledLogger ACTION_FAILURE_LOG = new ThrottledLogger(log,
             "client action failure");
+    private static final ThrottledLogger DROPPED_PACKET_LOG = new ThrottledLogger(log,
+            "dropped client packet");
 
     private final V086Controller controller;
     private final int bufferSize;
@@ -69,8 +95,9 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
     private int messageNumberCounter = 0;
     private int prevMessageNumber = -1;
     private int lastMessageNumber = -1;
-    private GameDataCache clientCache = null;
-    private GameDataCache serverCache = null;
+    // Published to the event thread and swapped when a round starts.
+    private volatile GameDataCache clientCache = null;
+    private volatile GameDataCache serverCache = null;
 
     private LastMessageBuffer lastMessageBuffer = new LastMessageBuffer(MAX_BUNDLE_SIZE);
     private V086Message[] outMessages = new V086Message[MAX_BUNDLE_SIZE];
@@ -165,6 +192,14 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
         return messageNumberCounter++;
     }
 
+    /** Allocates the authoritative send number. Caller holds {@code outSynch}. */
+    private int nextMessageNumber() {
+        if (messageNumberCounter > 0xFFFF)
+            messageNumberCounter = 0;
+
+        return messageNumberCounter++;
+    }
+
     public int getPrevMessageNumber() {
         return prevMessageNumber;
     }
@@ -181,7 +216,34 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
         return serverCache;
     }
 
-    public void resetGameDataCache() {
+    /**
+     * Adds client input to the client cache and swaps it under the same monitor
+     * used by {@link #resetGameDataCache()}, so a reset cannot lose an update or
+     * publish a half-swapped pair of caches.
+     */
+    public synchronized void addClientGameData(byte[] data) {
+        GameDataCache cache = clientCache;
+        if (cache != null)
+            cache.add(data);
+    }
+
+    /**
+     * Resolves a client-supplied cache key against the current generation.
+     *
+     * @return the cached data, or null when the key is unknown
+     */
+    public synchronized byte[] getClientGameData(int key) {
+        GameDataCache cache = clientCache;
+        if (cache == null)
+            return null;
+        try {
+            return cache.get(key);
+        } catch (IndexOutOfBoundsException e) {
+            return null;
+        }
+    }
+
+    public synchronized void resetGameDataCache() {
         clientCache = new ClientGameDataCache(256);
         serverCache = new ServerGameDataCache(256);
     }
@@ -291,7 +353,7 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
         V086Bundle inBundle = null;
 
         try {
-            inBundle = V086Bundle.parse(buffer, lastMessageNumber);
+            inBundle = V086Bundle.parse(buffer, lastMessageNumber, CLIENT_MESSAGE_TYPES);
         } catch (ParseException | V086BundleFormatException | MessageFormatException e) {
             logRejectedBundle(buffer, e);
             return;
@@ -323,8 +385,8 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
                         if (prevMessageNumber >= 0) {
                             int expected = (prevMessageNumber + 1) & 0xFFFF;
                             if (expected != lastMessageNumber) {
-                                log.warn(localUser + " dropped a packet! (" + prevMessageNumber
-                                        + " to " + lastMessageNumber + ")");
+                                DROPPED_PACKET_LOG.warn(localUser + " dropped a packet! ("
+                                        + prevMessageNumber + " to " + lastMessageNumber + ")");
                                 localUser.droppedPacket();
                             }
                         }
@@ -358,7 +420,8 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
                 }
             }
         } catch (FatalActionException e) {
-            log.warn(toString() + " fatal action, closing connection: " + e.getMessage());
+            log.warn(toString() + " fatal action, closing connection: "
+                    + InputValidator.sanitizeForLog(e.getMessage()));
             stop();
         }
     }
@@ -489,8 +552,13 @@ public final class V086ClientHandler extends PrivateUDPServer implements Kailler
 
     public void send(V086Message outMessage, int numToSend) {
         synchronized (outSynch) {
-            if (outMessage != null)
+            if (outMessage != null) {
+                // Number allocation and enqueueing must be one critical section.
+                // Allocating earlier let another thread send number 11 before this
+                // thread sent 10; the client then discarded 10 as stale.
+                outMessage.setNumber(nextMessageNumber());
                 lastMessageBuffer.add(outMessage);
+            }
 
             numToSend = lastMessageBuffer.fill(outMessages, numToSend);
             V086Bundle outBundle = new V086Bundle(outMessages, numToSend);

@@ -48,8 +48,15 @@ public final class ACKCommandAction implements V086Action {
         actionCount.incrementAndGet();
 
         KailleraUser user = clientHandler.getUser();
-        if (user.isLoggedIn())
+        if (user == null || user.isLoggedIn())
             return;
+
+        // ACK before UserInformation has no identity or socket address. Logging in
+        // here used to NPE in server.login and leave the connecting slot occupied.
+        if (user.getSocketAddress() == null) {
+            log.debug("{} sent ClientACK before UserInformation; ignored", user);
+            return;
+        }
 
         clientHandler.addSpeedMeasurement();
 

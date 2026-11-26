@@ -4,6 +4,7 @@ import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.function.IntPredicate;
 
 import su.kidoz.kaillera.controller.messaging.ByteBufferMessage;
 import su.kidoz.kaillera.controller.messaging.MessageFormatException;
@@ -165,6 +166,35 @@ public class V086Bundle extends ByteBufferMessage {
 
     public static V086Bundle parse(ByteBuffer buffer, int lastMessageID)
             throws ParseException, V086BundleFormatException, MessageFormatException {
+        return parse(buffer, lastMessageID, null);
+    }
+
+    /**
+     * Parses a bundle, optionally requiring each message type to pass a filter.
+     *
+     * <p>
+     * The filter runs after the header is validated but before the body is parsed.
+     * A client must not be allowed to make the server parse messages that only a
+     * server sends; those parsers are not written for untrusted input and may
+     * allocate from attacker-supplied counts.
+     *
+     * @param buffer
+     *            the bundle bytes
+     * @param lastMessageID
+     *            message numbers at or below this are already processed
+     * @param acceptedMessageType
+     *            receives the unsigned message type, or null to accept all
+     * @return the parsed bundle
+     * @throws ParseException
+     *             when a message is malformed or its type is refused
+     * @throws V086BundleFormatException
+     *             when the bundle framing is invalid
+     * @throws MessageFormatException
+     *             when a message body is invalid
+     */
+    public static V086Bundle parse(ByteBuffer buffer, int lastMessageID,
+            IntPredicate acceptedMessageType)
+            throws ParseException, V086BundleFormatException, MessageFormatException {
         buffer.order(ByteOrder.LITTLE_ENDIAN);
 
         if (buffer.limit() < MIN_BUFFER_LENGTH)
@@ -207,16 +237,36 @@ public class V086Bundle extends ByteBufferMessage {
                     || messageLength > buffer.limit())
                 throw new ParseException("Invalid message length: " + messageLength);
 
+            // The declared length bounds the body. Parsing straight from the bundle
+            // let a short messageLength borrow bytes from the next message, so a body
+            // could be aliased into a fabricated header.
+            int messageStart = buffer.position();
+            ByteBuffer messageBuffer = buffer.duplicate();
+            messageBuffer.order(buffer.order());
+            messageBuffer.limit(messageStart + messageLength);
+
+            if (acceptedMessageType != null) {
+                int messageType = messageBuffer.get(messageStart) & 0xFF;
+                if (!acceptedMessageType.test(messageType))
+                    throw new ParseException(
+                            "Message type not accepted from client: " + messageType);
+            }
+
             // messages are purposely added in reverse order here so it's faster to read out
             // in the controller
             // messages.push(V086Message.parse(messageNumber, messageLength, buffer));
             // messages.addFirst(V086Message.parse(messageNumber, messageLength, buffer));
             // messages.add(V086Message.parse(messageNumber, messageLength, buffer));
             try {
-                messages[parsedCount] = V086Message.parse(messageNumber, messageLength, buffer);
+                messages[parsedCount] = V086Message.parse(messageNumber, messageLength,
+                        messageBuffer);
             } catch (BufferUnderflowException e) {
                 throw new ParseException("Message appears truncated", e);
             }
+
+            // Skip any bytes the parser did not consume, but never let it run into
+            // the next message.
+            buffer.position(messageStart + messageLength);
         }
 
         return new V086Bundle(messages, parsedCount);

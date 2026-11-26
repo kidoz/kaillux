@@ -41,7 +41,7 @@ public final class CachedGameDataAction implements V086Action {
             throws FatalActionException {
         try {
             int key = ((CachedGameData) message).getKey();
-            byte[] data = clientHandler.getClientGameDataCache().get(key);
+            byte[] data = clientHandler.getClientGameData(key);
             if (data == null) {
                 log.debug("{}: cached game data key {} is not in the cache", clientHandler, key);
                 try {

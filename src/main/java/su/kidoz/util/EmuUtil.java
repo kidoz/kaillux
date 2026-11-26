@@ -208,16 +208,26 @@ public class EmuUtil {
     }
 
     public static String readString(ByteBuffer buffer, int stopByte, Charset charset) {
-        ByteBuffer tempBuffer = ByteBuffer.allocate(buffer.remaining());
-        byte b;
-        while (buffer.hasRemaining()) {
-            b = buffer.get();
-            if (b == stopByte)
-                break;
-            tempBuffer.put(b);
+        // Allocate exactly the bytes that belong to this string. Allocating
+        // buffer.remaining() made a message with many short strings allocate the
+        // rest of the datagram once per string.
+        int start = buffer.position();
+        int limit = buffer.limit();
+        int end = start;
+        byte terminator = (byte) stopByte;
+        while (end < limit && buffer.get(end) != terminator) {
+            end++;
         }
-        tempBuffer.flip();
-        return charset.decode(tempBuffer).toString();
+
+        byte[] bytes = new byte[end - start];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = buffer.get(start + i);
+        }
+
+        // Consume the terminator when one was present; otherwise leave the buffer
+        // at its limit, matching the old end-of-buffer behaviour.
+        buffer.position(end < limit ? end + 1 : end);
+        return new String(bytes, charset);
     }
 
     public static void writeString(ByteBuffer buffer, String s, int stopByte, Charset charset) {
