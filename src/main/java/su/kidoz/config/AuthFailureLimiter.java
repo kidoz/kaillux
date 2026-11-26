@@ -3,6 +3,7 @@ package su.kidoz.config;
 import java.io.IOException;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 
@@ -56,6 +57,8 @@ public final class AuthFailureLimiter extends OncePerRequestFilter {
 
     private final int maxFailures;
     private final long windowMillis;
+    private final int maxTrackedClients;
+    private final Set<String> trustedProxies;
     private final LongSupplier clock;
     private final Map<String, Window> failures = new ConcurrentHashMap<>();
 
@@ -63,15 +66,35 @@ public final class AuthFailureLimiter extends OncePerRequestFilter {
      * Creates a limiter with the default limit of ten failures per minute.
      */
     public AuthFailureLimiter() {
-        this(DEFAULT_MAX_FAILURES, DEFAULT_WINDOW_MILLIS, System::currentTimeMillis);
+        this(DEFAULT_MAX_FAILURES, DEFAULT_WINDOW_MILLIS, MAX_TRACKED_CLIENTS, Set.of(),
+                System::currentTimeMillis);
+    }
+
+    /**
+     * Creates a limiter that honours X-Forwarded-For only from the given proxies.
+     *
+     * @param trustedProxies
+     *            addresses allowed to assert a client address
+     */
+    public AuthFailureLimiter(Set<String> trustedProxies) {
+        this(DEFAULT_MAX_FAILURES, DEFAULT_WINDOW_MILLIS, MAX_TRACKED_CLIENTS,
+                Set.copyOf(trustedProxies), System::currentTimeMillis);
     }
 
     AuthFailureLimiter(int maxFailures, long windowMillis, LongSupplier clock) {
-        if (maxFailures < 1 || windowMillis <= 0) {
-            throw new IllegalArgumentException("maxFailures must be >= 1 and windowMillis > 0");
+        this(maxFailures, windowMillis, MAX_TRACKED_CLIENTS, Set.of(), clock);
+    }
+
+    AuthFailureLimiter(int maxFailures, long windowMillis, int maxTrackedClients,
+            Set<String> trustedProxies, LongSupplier clock) {
+        if (maxFailures < 1 || windowMillis <= 0 || maxTrackedClients < 1) {
+            throw new IllegalArgumentException(
+                    "maxFailures and maxTrackedClients must be >= 1 and windowMillis > 0");
         }
         this.maxFailures = maxFailures;
         this.windowMillis = windowMillis;
+        this.maxTrackedClients = maxTrackedClients;
+        this.trustedProxies = Set.copyOf(trustedProxies);
         this.clock = clock;
     }
 
@@ -110,13 +133,34 @@ public final class AuthFailureLimiter extends OncePerRequestFilter {
      *            the inbound request
      * @return the bucket key, or null
      */
-    static String trackedClient(HttpServletRequest request) {
+    private String trackedClient(HttpServletRequest request) {
         String authorization = request.getHeader("Authorization");
         if (authorization == null
                 || !authorization.regionMatches(true, 0, BASIC_PREFIX, 0, BASIC_PREFIX.length())) {
             return null;
         }
-        return bucketKey(request.getRemoteAddr());
+        return bucketKey(clientAddress(request));
+    }
+
+    /**
+     * Resolves the client address. X-Forwarded-For is honoured only when the
+     * connection comes from a configured proxy; otherwise any client could pick
+     * someone else's bucket and lock them out.
+     */
+    private String clientAddress(HttpServletRequest request) {
+        String remote = request.getRemoteAddr();
+        if (remote == null || trustedProxies.isEmpty() || !trustedProxies.contains(remote)) {
+            return remote;
+        }
+
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded == null || forwarded.isBlank()) {
+            return remote;
+        }
+
+        int comma = forwarded.indexOf(',');
+        String first = (comma >= 0 ? forwarded.substring(0, comma) : forwarded).trim();
+        return first.isEmpty() ? remote : first;
     }
 
     /**
@@ -156,10 +200,11 @@ public final class AuthFailureLimiter extends OncePerRequestFilter {
     }
 
     private void recordFailure(String client) {
-        if (failures.size() >= MAX_TRACKED_CLIENTS && !failures.containsKey(client) && !sweep()) {
-            // The table is full of live windows. New clients are then not limited
-            // rather than evicting the limits that already hold.
-            return;
+        if (failures.size() >= maxTrackedClients && !failures.containsKey(client) && !sweep()) {
+            // The table is full of live windows. Evict the oldest rather than
+            // stopping the limit: a distributed attacker must not be able to make
+            // every new address unlimited.
+            evictOldest();
         }
 
         Window window = failures.computeIfAbsent(client, key -> new Window());
@@ -185,7 +230,23 @@ public final class AuthFailureLimiter extends OncePerRequestFilter {
                 iterator.remove();
             }
         }
-        return failures.size() < MAX_TRACKED_CLIENTS;
+        return failures.size() < maxTrackedClients;
+    }
+
+    /** Removes the window with the oldest start time. */
+    private void evictOldest() {
+        String oldestKey = null;
+        long oldestStart = Long.MAX_VALUE;
+        for (Map.Entry<String, Window> entry : failures.entrySet()) {
+            long start = entry.getValue().startTime();
+            if (start < oldestStart) {
+                oldestStart = start;
+                oldestKey = entry.getKey();
+            }
+        }
+        if (oldestKey != null) {
+            failures.remove(oldestKey);
+        }
     }
 
     /** Failure count of one client inside one window. */
@@ -205,6 +266,10 @@ public final class AuthFailureLimiter extends OncePerRequestFilter {
 
         private synchronized boolean expired(long now, long windowMillis) {
             return now - start >= windowMillis;
+        }
+
+        private synchronized long startTime() {
+            return start;
         }
 
         private void roll(long now, long windowMillis) {

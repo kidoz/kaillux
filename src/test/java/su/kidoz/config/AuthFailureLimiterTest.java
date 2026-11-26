@@ -3,6 +3,7 @@ package su.kidoz.config;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -91,6 +92,49 @@ class AuthFailureLimiterTest {
         chain.status = 200;
         assertEquals(401, pass(request("Basic abc")).getStatus());
         assertEquals(MAX_FAILURES, chain.calls, "the password check must be skipped");
+    }
+
+    @Test
+    @DisplayName("a trusted proxy buckets by the forwarded client address")
+    void aTrustedProxyBucketsByForwardedAddress() throws Exception {
+        limiter = new AuthFailureLimiter(MAX_FAILURES, WINDOW_MILLIS, 10, Set.of("127.0.0.1"),
+                now::get);
+
+        MockHttpServletRequest first = new MockHttpServletRequest();
+        first.setRemoteAddr("127.0.0.1");
+        first.addHeader("Authorization", "Basic abc");
+        first.addHeader("X-Forwarded-For", "203.0.113.50");
+        for (int i = 0; i < MAX_FAILURES; i++) {
+            assertEquals(401, pass(first).getStatus());
+        }
+
+        chain.status = 200;
+        assertEquals(401, pass(first).getStatus(), "the forwarded client is locked");
+
+        MockHttpServletRequest second = new MockHttpServletRequest();
+        second.setRemoteAddr("127.0.0.1");
+        second.addHeader("Authorization", "Basic abc");
+        second.addHeader("X-Forwarded-For", "203.0.113.51");
+        assertEquals(200, pass(second).getStatus(), "another client behind the same proxy passes");
+    }
+
+    @Test
+    @DisplayName("a full table evicts the oldest address instead of stopping the limit")
+    void aFullTableEvictsTheOldestAddress() throws Exception {
+        limiter = new AuthFailureLimiter(MAX_FAILURES, WINDOW_MILLIS, 1, Set.of(), now::get);
+
+        assertEquals(401, pass(request("Basic abc")).getStatus());
+
+        MockHttpServletRequest second = new MockHttpServletRequest();
+        second.setRemoteAddr("203.0.113.8");
+        second.addHeader("Authorization", "Basic abc");
+        for (int i = 0; i < MAX_FAILURES; i++) {
+            assertEquals(401, pass(second).getStatus());
+        }
+
+        chain.status = 200;
+        assertEquals(401, pass(second).getStatus(),
+                "a new address must still be limited when the table is full");
     }
 
     @Test

@@ -1,5 +1,6 @@
 package su.kidoz.config;
 
+import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.List;
 import su.kidoz.kaillera.access.FileBasedAccessManager;
@@ -31,9 +32,8 @@ import su.kidoz.kaillera.service.impl.GameServiceImpl;
 import su.kidoz.kaillera.service.impl.UserServiceImpl;
 import su.kidoz.util.EmuLinkerExecutor;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
-import org.springframework.boot.http.client.HttpClientSettings;
 import org.springframework.context.annotation.Bean;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.client.RestClient;
 
@@ -49,10 +49,15 @@ public class EmuLinkerConfig {
 
     @Bean
     public RestClient restClient(RestClient.Builder builder) {
-        HttpClientSettings settings = HttpClientSettings.defaults()
-                .withConnectTimeout(Duration.ofSeconds(5)).withReadTimeout(Duration.ofSeconds(5));
-        return builder.requestFactory(ClientHttpRequestFactoryBuilder.simple().build(settings))
-                .build();
+        HttpClient httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
+                // A redirect from a master endpoint is a way to turn the server into a
+                // blind internal HTTP client.
+                .followRedirects(HttpClient.Redirect.NEVER).build();
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
+        requestFactory.setReadTimeout(Duration.ofSeconds(5));
+
+        return builder.requestFactory(requestFactory)
+                .requestInterceptor(new MaxResponseSizeInterceptor(64 * 1024)).build();
     }
 
     @Bean

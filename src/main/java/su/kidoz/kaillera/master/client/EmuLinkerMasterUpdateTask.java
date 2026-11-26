@@ -34,6 +34,11 @@ public class EmuLinkerMasterUpdateTask implements MasterListUpdateTask {
         this.releaseInfo = releaseInfo;
         this.restClient = restClient;
         this.emulinkerMasterUrl = emulinkerMasterUrl;
+
+        if (!emulinkerMasterUrl.startsWith("https://")) {
+            log.warn("master-list.emulinker-master-url is not HTTPS ({}). The update notice "
+                    + "can be modified by an on-path attacker.", emulinkerMasterUrl);
+        }
     }
 
     public void touchMaster() {

@@ -1,10 +1,14 @@
 package su.kidoz.config;
 
+import java.io.IOException;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.List;
 
 import jakarta.annotation.PostConstruct;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 import org.slf4j.Logger;
@@ -15,7 +19,10 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -23,6 +30,9 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.www.BasicAuthenticationFilter;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import su.kidoz.kaillera.access.InGameAdminGuard;
 
 @Configuration
 @EnableWebSecurity
@@ -45,6 +55,20 @@ public class SecurityConfig {
     @Value("${admin.security.failOnInsecureCredentials:false}")
     private boolean failOnInsecureCredentials;
 
+    /**
+     * How long a successful dashboard login trusts an address for in-game admin.
+     */
+    @Value("${admin.in-game-admin-ttl-seconds:1800}")
+    private long inGameAdminTtlSeconds;
+
+    /** Optional comma-separated wildcard addresses that may use in-game admin. */
+    @Value("${admin.trusted-in-game-addresses:}")
+    private String trustedInGameAddresses;
+
+    /** Reverse proxies whose X-Forwarded-For header may be believed. */
+    @Value("${admin.security.trusted-proxies:}")
+    private String trustedProxies;
+
     private final Environment environment;
 
     public SecurityConfig(Environment environment) {
@@ -53,10 +77,23 @@ public class SecurityConfig {
 
     @PostConstruct
     public void validateCredentials() {
+        InGameAdminGuard.configure(inGameAdminTtlSeconds, trustedInGameAddresses);
+
+        boolean isProduction = List.of(environment.getActiveProfiles()).contains("prod")
+                || List.of(environment.getActiveProfiles()).contains("production");
+
         // Never fall back to a well-known default password. When none is
         // configured, generate one so the admin API is not reachable with
-        // published credentials.
+        // published credentials. In production the generated secret would be
+        // captured by the container or journal, so require an explicit one.
         if (adminPassword == null || adminPassword.isBlank()) {
+            if (isProduction) {
+                log.error("No admin password configured in a production profile");
+                throw new SecurityException(
+                        "Application startup blocked: set ADMIN_PASSWORD (admin.password) "
+                                + "in production; a generated password would be written to "
+                                + "captured process output.");
+            }
             adminPassword = generateRandomPassword();
             // The password is written to the process console only. Sending it
             // through the logger would store it in every shipped log file.
@@ -75,10 +112,6 @@ public class SecurityConfig {
 
         if (insecureUsername || insecurePassword) {
             String message = buildSecurityWarningMessage(insecureUsername, insecurePassword);
-
-            // Check if running in production profile or if failOnInsecureCredentials is set
-            boolean isProduction = List.of(environment.getActiveProfiles()).contains("prod")
-                    || List.of(environment.getActiveProfiles()).contains("production");
 
             if (failOnInsecureCredentials || isProduction) {
                 log.error(message);
@@ -142,18 +175,29 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // Admin API requires authentication (both prefixes)
                         .requestMatchers("/api/admin/**", "/api/v1/admin/**").authenticated()
-                        // Exposed actuator endpoints when base-path is "/"
-                        .requestMatchers("/metrics", "/healthz").permitAll()
-                        // Actuator endpoints - health/info are public, others require auth
-                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()
-                        .requestMatchers("/actuator/**").authenticated()
-                        // Static resources and other endpoints are public
-                        .anyRequest().permitAll())
+                        // Prometheus metrics and API documentation describe the
+                        // internal surface; they are not public by default.
+                        .requestMatchers("/metrics", "/api-docs/**", "/swagger-ui.html",
+                                "/swagger-ui/**")
+                        .authenticated()
+                        // Health probes stay public for orchestrators and monitors.
+                        .requestMatchers("/healthz", "/healthz/**", "/actuator/health",
+                                "/actuator/health/**", "/actuator/info")
+                        .permitAll().requestMatchers("/actuator/**").authenticated()
+                        // The dashboard shell and its static assets.
+                        .requestMatchers("/admin", "/admin/", "/admin/**").permitAll()
+                        // Anything added later is private unless it is listed above.
+                        .anyRequest().denyAll())
                 .headers(headers -> headers.contentSecurityPolicy(
                         csp -> csp.policyDirectives(CONTENT_SECURITY_POLICY)))
                 // Each attempt at the password costs a BCrypt hash, so an address that
                 // keeps failing is refused before it reaches authentication.
-                .addFilterBefore(new AuthFailureLimiter(), BasicAuthenticationFilter.class)
+                .addFilterBefore(new AuthFailureLimiter(trustedProxyAddresses()),
+                        BasicAuthenticationFilter.class)
+                // In-game admin authority is keyed by UDP source address, which can be
+                // spoofed. Remember addresses that completed a real HTTP authentication.
+                .addFilterAfter(new InGameAdminAuthenticationFilter(),
+                        BasicAuthenticationFilter.class)
                 // Return 401 without WWW-Authenticate. A Basic challenge makes
                 // the browser show its own login dialog and leaves fetch()
                 // waiting, so the admin page cannot report a rejected password.
@@ -174,5 +218,32 @@ public class SecurityConfig {
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
+    }
+
+    private java.util.Set<String> trustedProxyAddresses() {
+        if (trustedProxies == null || trustedProxies.isBlank()) {
+            return java.util.Set.of();
+        }
+        return java.util.Arrays.stream(trustedProxies.split(",")).map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    /**
+     * Records the source address of a request that authenticated successfully.
+     * In-game admin commands require this proof because a UDP source address can be
+     * spoofed without ever receiving the response.
+     */
+    private static final class InGameAdminAuthenticationFilter extends OncePerRequestFilter {
+        @Override
+        protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
+                FilterChain filterChain) throws ServletException, IOException {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            if (authentication != null && authentication.isAuthenticated()
+                    && !(authentication instanceof AnonymousAuthenticationToken)) {
+                InGameAdminGuard.recordAuthenticatedAddress(request.getRemoteAddr());
+            }
+            filterChain.doFilter(request, response);
+        }
     }
 }

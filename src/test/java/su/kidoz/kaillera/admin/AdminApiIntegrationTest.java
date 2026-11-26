@@ -85,13 +85,18 @@ class AdminApiIntegrationTest {
     }
 
     @Test
-    @DisplayName("health, metrics, and OpenAPI endpoints are public")
+    @DisplayName("health probes are public; metrics and OpenAPI require authentication")
     void publicEndpointsAreReachable() {
         assertEquals(200, client.health().status());
         assertEquals(200, client.liveness().status());
         assertEquals(200, client.readiness().status());
         assertEquals(200, client.metrics().status());
         assertEquals(200, client.apiDocs().status());
+
+        AdminApiClient anonymous = new AdminApiClient(baseUrl, null, null);
+        assertEquals(401, anonymous.rawGet("/metrics").status());
+        assertEquals(401, anonymous.rawGet("/api-docs").status());
+        assertEquals(401, anonymous.rawGet("/swagger-ui/index.html").status());
     }
 
     @Test

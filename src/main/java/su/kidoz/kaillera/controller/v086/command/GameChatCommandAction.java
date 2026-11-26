@@ -6,6 +6,7 @@ import su.kidoz.kaillera.controller.v086.annotation.V086Command;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
+import su.kidoz.kaillera.model.validation.InputValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -61,14 +62,16 @@ public final class GameChatCommandAction implements V086Action {
             clientHandler.getUser().gameChat(gameChatMessage.getMessage(),
                     gameChatMessage.getNumber());
         } catch (GameChatException e) {
-            log.debug("Failed to send game chat message: " + e.getMessage());
+            log.debug("Failed to send game chat message: "
+                    + InputValidator.sanitizeForLog(e.getMessage()));
         }
 
         if (((GameChat) message).getMessage().startsWith(ADMIN_COMMAND_ESCAPE_STRING)) {
             try {
                 gameOwnerCommandAction.performAction(message, clientHandler);
             } catch (FatalActionException e) {
-                log.warn("GameOwner command failed, processing as chat: " + e.getMessage());
+                log.warn("GameOwner command failed, processing as chat: "
+                        + InputValidator.sanitizeForLog(e.getMessage()));
             }
         }
     }

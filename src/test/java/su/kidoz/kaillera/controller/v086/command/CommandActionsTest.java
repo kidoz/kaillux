@@ -22,6 +22,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import su.kidoz.kaillera.access.AccessManager;
+import su.kidoz.kaillera.access.InGameAdminGuard;
 import su.kidoz.kaillera.controller.v086.V086ClientHandler;
 import su.kidoz.kaillera.controller.v086.V086Controller;
 import su.kidoz.kaillera.model.KailleraServer;
@@ -177,6 +178,30 @@ class CommandActionsTest {
         @BeforeEach
         void setUp() {
             action = new AdminCommandAction();
+            // In-game admin commands also require an expressly trusted source.
+            InGameAdminGuard.configure(1800, "10.0.0.5");
+        }
+
+        @Test
+        @DisplayName("should reject an admin command from an unverified source")
+        void shouldRejectUnverifiedAdminSource() throws Exception {
+            KailleraServer server = mock(KailleraServer.class);
+            AccessManager accessManager = mock(AccessManager.class);
+            V086Controller controller = mock(V086Controller.class);
+            InetAddress address = InetAddress.getByName("10.9.9.9");
+            when(clientHandler.getController()).thenReturn(controller);
+            when(controller.getServer()).thenReturn(server);
+            when(server.getAccessManager()).thenReturn(accessManager);
+            when(user.isLoggedIn()).thenReturn(true);
+            when(clientHandler.getRemoteInetAddress()).thenReturn(address);
+            when(clientHandler.getRemoteSocketAddress())
+                    .thenReturn(new InetSocketAddress(address, 40000));
+            when(accessManager.getAccess(address)).thenReturn(AccessManager.ACCESS_ADMIN);
+
+            assertThrows(FatalActionException.class, () -> action
+                    .performAction(new Chat_Request(1, "/announce hello"), clientHandler));
+
+            verify(server, never()).announce("hello", false);
         }
 
         @Test

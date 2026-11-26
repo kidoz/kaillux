@@ -16,6 +16,7 @@ import su.kidoz.kaillera.model.KailleraUser;
 import su.kidoz.kaillera.model.exception.ActionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.util.EmuLang;
 
 @Component
@@ -54,7 +55,7 @@ public final class GameOwnerCommandAction implements V086Action {
 
         if (!user.equals(game.getOwner())) {
             log.warn("GameOwner Command Denied: Not game owner: " + game + ": " + user + ": "
-                    + chat);
+                    + InputValidator.sanitizeForLog(chat));
             return;
         }
 
@@ -64,10 +65,12 @@ public final class GameOwnerCommandAction implements V086Action {
             } else if (chat.startsWith(COMMAND_DETECTAUTOFIRE)) {
                 processDetectAutoFire(chat, game, user, clientHandler);
             } else {
-                log.info("Unknown GameOwner Command: " + game + ": " + user + ": " + chat);
+                log.info("Unknown GameOwner Command: " + game + ": " + user + ": "
+                        + InputValidator.sanitizeForLog(chat));
             }
         } catch (ActionException e) {
-            log.info("GameOwner Command Failed: " + game + ": " + user + ": " + chat);
+            log.info("GameOwner Command Failed: " + game + ": " + user + ": "
+                    + InputValidator.sanitizeForLog(chat));
             game.announce(
                     EmuLang.getString("GameOwnerCommandAction.CommandFailed", e.getMessage()));
         } catch (MessageFormatException e) {

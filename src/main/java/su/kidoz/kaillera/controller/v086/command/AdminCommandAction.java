@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import org.springframework.stereotype.Component;
 import su.kidoz.kaillera.access.AccessManager;
+import su.kidoz.kaillera.access.InGameAdminGuard;
 import su.kidoz.kaillera.controller.messaging.MessageFormatException;
 import su.kidoz.kaillera.controller.v086.V086ClientHandler;
 import su.kidoz.kaillera.controller.v086.protocol.Chat;
@@ -21,6 +22,7 @@ import su.kidoz.kaillera.model.KailleraGame;
 import su.kidoz.kaillera.model.KailleraServer;
 import su.kidoz.kaillera.model.KailleraUser;
 import su.kidoz.kaillera.model.exception.ActionException;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.release.ReleaseInfo;
 import su.kidoz.util.EmuLang;
 import su.kidoz.util.WildcardStringPattern;
@@ -81,7 +83,16 @@ public final class AdminCommandAction implements V086Action {
             throw new FatalActionException(
                     "Admin Command Denied: " + user + " does not have Admin access: " + chat);
 
-        log.info(user + ": Admin Command: " + chat);
+        // Access-by-source-IP alone is spoofable over UDP. Require loopback, an
+        // explicit management pattern, or a recent authenticated HTTP request from
+        // the same address before executing a privileged command.
+        if (!InGameAdminGuard.isTrusted(peer.getAddress()))
+            throw new FatalActionException(
+                    "Admin Command Denied: source address is not a verified admin client: " + chat);
+
+        log.info(user + ": Admin Command from "
+                + InputValidator.sanitizeForLog(peer.getAddress().getHostAddress()) + ": "
+                + InputValidator.sanitizeForLog(chat));
 
         try {
             if (chat.startsWith(COMMAND_HELP)) {
@@ -111,7 +122,7 @@ public final class AdminCommandAction implements V086Action {
             } else
                 throw new ActionException("Invalid Command: " + chat);
         } catch (ActionException e) {
-            log.info("Admin Command Failed: " + user + ": " + chat);
+            log.info("Admin Command Failed: " + user + ": " + InputValidator.sanitizeForLog(chat));
 
             try {
                 clientHandler.send(new InformationMessage(clientHandler.getNextMessageNumber(),

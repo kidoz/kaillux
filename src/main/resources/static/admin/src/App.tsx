@@ -36,8 +36,7 @@ const VIEWS: Record<ViewName, { title: string; description: string }> = {
 };
 const REFRESH_INTERVAL_MS = 10000;
 const RETRY_NOTE = `Retrying every ${REFRESH_INTERVAL_MS / 1000} seconds, or use Refresh to try now.`;
-const CREDENTIALS_KEY = 'kaillux-admin-basic';
-type SessionState = 'checking' | 'authenticated' | 'anonymous';
+type SessionState = 'authenticated' | 'anonymous';
 
 function currentView(): ViewName {
   const value = window.location.hash.slice(1);
@@ -53,7 +52,9 @@ function formatUptime(minutes: number): string {
 }
 
 export default function App() {
-  const [session, setSession] = useState<SessionState>('checking');
+  // Credentials stay in memory only. sessionStorage would keep the reusable
+  // Basic header readable by any script on this origin, including Swagger UI.
+  const [session, setSession] = useState<SessionState>('anonymous');
   const [authHeader, setAuthHeader] = useState<string | null>(null);
   const [loginError, setLoginError] = useState('');
   const [signingIn, setSigningIn] = useState(false);
@@ -76,7 +77,6 @@ export default function App() {
     sessionEpoch.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
-    sessionStorage.removeItem(CREDENTIALS_KEY);
     setAuthHeader(null);
     setSession('anonymous');
     setLoginError(message);
@@ -162,44 +162,6 @@ export default function App() {
   }, [notice]);
 
   useEffect(() => {
-    const stored = sessionStorage.getItem(CREDENTIALS_KEY);
-    if (!stored) {
-      setSession('anonymous');
-      return;
-    }
-    const controller = new AbortController();
-    void (async () => {
-      try {
-        const info = await fetchServerInfo(stored, controller.signal);
-        if (controller.signal.aborted) return;
-        if (!info) {
-          // The server answered but not usefully. Keep the session and report the
-          // problem; the next refresh shows whether the credentials still work.
-          setAuthHeader(stored);
-          setSession('authenticated');
-          setLoadError(`Unable to load server data. ${RETRY_NOTE}`);
-          return;
-        }
-        setAuthHeader(stored);
-        setServerInfo(info);
-        setSession('authenticated');
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        if (error instanceof AuthError) {
-          // Only a rejected credential ends the session. A server that cannot be
-          // reached, or answers with unexpected data, must not discard it.
-          signOut('Your session has expired. Please sign in again.');
-          return;
-        }
-        setAuthHeader(stored);
-        setSession('authenticated');
-        setLoadError(`Unable to reach the server. ${RETRY_NOTE}`);
-      }
-    })();
-    return () => controller.abort();
-  }, [signOut]);
-
-  useEffect(() => {
     if (session !== 'authenticated' || !authHeader) return;
     // A hidden tab polls nothing: each poll costs the server a password check, and
     // nobody is looking at the result.
@@ -241,7 +203,6 @@ export default function App() {
         setLoginError('Unable to reach the server. Check the connection and try again.');
         return;
       }
-      sessionStorage.setItem(CREDENTIALS_KEY, authorization);
       setAuthHeader(authorization);
       setServerInfo(info);
       setSession('authenticated');
@@ -290,14 +251,7 @@ export default function App() {
   };
 
   if (session !== 'authenticated') {
-    return (
-      <LoginScreen
-        error={loginError}
-        pending={signingIn}
-        checking={session === 'checking'}
-        onSubmit={handleLogin}
-      />
-    );
+    return <LoginScreen error={loginError} pending={signingIn} onSubmit={handleLogin} />;
   }
 
   return (

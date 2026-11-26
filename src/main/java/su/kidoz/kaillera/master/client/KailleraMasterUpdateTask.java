@@ -31,6 +31,11 @@ public class KailleraMasterUpdateTask implements MasterListUpdateTask {
         this.kailleraServer = kailleraServer;
         this.statsCollector = statsCollector;
         this.restClient = restClient;
+
+        if (!KAILLERA_MASTER_URL.startsWith("https://")) {
+            log.warn("Kaillera master URL is not HTTPS ({}). Registration metadata can be "
+                    + "modified by an on-path attacker.", KAILLERA_MASTER_URL);
+        }
     }
 
     public void touchMaster() {

@@ -17,6 +17,7 @@ import su.kidoz.kaillera.controller.v086.protocol.InformationMessage;
 import su.kidoz.kaillera.controller.v086.protocol.V086Message;
 import su.kidoz.kaillera.model.KailleraUser;
 import su.kidoz.kaillera.model.exception.ActionException;
+import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.util.EmuLang;
 
 /**
@@ -64,7 +65,8 @@ public final class ChatCommandAction implements V086Action {
                 adminCommandAction.performAction(message, clientHandler);
                 return;
             } catch (FatalActionException e) {
-                log.warn("Admin command failed, processing as chat: " + e.getMessage());
+                log.warn("Admin command failed, processing as chat: "
+                        + InputValidator.sanitizeForLog(e.getMessage()));
             }
         }
 
@@ -74,7 +76,7 @@ public final class ChatCommandAction implements V086Action {
             clientHandler.getUser().chat(((Chat) message).getMessage());
         } catch (ActionException e) {
             log.info("Chat Denied: " + clientHandler.getUser() + ": "
-                    + ((Chat) message).getMessage());
+                    + InputValidator.sanitizeForLog(((Chat) message).getMessage()));
 
             try {
                 clientHandler.send(new InformationMessage(clientHandler.getNextMessageNumber(),
