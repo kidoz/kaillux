@@ -2,6 +2,7 @@ package su.kidoz.kaillera.access;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static su.kidoz.kaillera.access.AccessManager.ACCESS_NORMAL;
 import static org.mockito.Mockito.mock;
@@ -74,6 +75,19 @@ class FileBasedAccessManagerTest {
     }
 
     @Test
+    @DisplayName("an IPv6 temporary ban covers the whole /64")
+    void anIpv6TemporaryBanCoversThe64() throws Exception {
+        FileBasedAccessManager manager = load("ipaddress,ALLOW,*", "user,NORMAL,*");
+
+        manager.addTempBan("2001:db8:1:2::1", 5);
+
+        assertEquals(AccessManager.ACCESS_BANNED, manager.getAccess(address("2001:db8:1:2::abcd")),
+                "rotating the interface identifier must not escape the ban");
+        assertEquals(ACCESS_NORMAL, manager.getAccess(address("2001:db8:1:3::1")),
+                "a different /64 must stay allowed");
+    }
+
+    @Test
     @DisplayName("a file with a bad line keeps the last rules that parsed cleanly")
     void aFileWithABadLineKeepsThePreviousRules() throws Exception {
         FileBasedAccessManager manager = load("ipaddress,DENY,10.6.6.*", "ipaddress,ALLOW,*");
@@ -96,13 +110,10 @@ class FileBasedAccessManagerTest {
     }
 
     @Test
-    @DisplayName("at startup the lines that parse are applied")
-    void atStartupTheLinesThatParseAreApplied() throws Exception {
-        FileBasedAccessManager manager = load("nonsense", "ipaddress,DENY,10.6.6.*",
-                "ipaddress,ALLOW,*");
-
-        assertFalse(manager.isAddressAllowed(address("10.6.6.1")));
-        assertTrue(manager.isAddressAllowed(address("10.6.7.1")));
+    @DisplayName("startup refuses an access file with unparsable lines")
+    void startupRefusesUnparsableLines() {
+        assertThrows(IllegalStateException.class,
+                () -> load("nonsense", "ipaddress,DENY,10.6.6.*", "ipaddress,ALLOW,*"));
     }
 
     @Test

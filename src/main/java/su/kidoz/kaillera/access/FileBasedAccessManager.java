@@ -4,9 +4,11 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -156,7 +158,16 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
         log.debug("FileBasedAccessManager thread starting (ThreadPool: {}/{})",
                 threadPool.getActiveCount(), threadPool.getPoolSize());
         stopFlag = false;
-        threadPool.execute(this);
+        // Latch running before submitting, so a stop() that races with startup
+        // still performs cleanup instead of returning early.
+        isRunning = true;
+        try {
+            threadPool.execute(this);
+        } catch (RuntimeException e) {
+            isRunning = false;
+            stopFlag = true;
+            throw e;
+        }
         log.info("FileBasedAccessManager started");
     }
 
@@ -169,14 +180,10 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
     public synchronized void stop() {
         log.debug("FileBasedAccessManager thread received stop request!");
 
-        if (!isRunning()) {
-            log.debug("FileBasedAccessManager thread stop request ignored: not running!");
-            return;
-        }
-
         stopFlag = true;
         ruleStore.clear();
         tempStore.clear();
+        isRunning = false;
         log.info("FileBasedAccessManager stopped");
     }
 
@@ -188,7 +195,6 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
 
     @Override
     public void run() {
-        isRunning = true;
         log.debug("FileBasedAccessManager thread running...");
 
         try {
@@ -275,9 +281,15 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
             return;
         }
 
-        if (!initial && result.errorCount() > 0) {
+        if (result.errorCount() > 0) {
             // Lines that fail to parse are dropped. Applying the rest could silently
             // remove a DENY rule, so the last rule set that parsed cleanly stays.
+            if (initial) {
+                // There is no previous set at startup. Refuse to start rather than
+                // serve traffic with a ban or admin rule silently missing.
+                throw new IllegalStateException("Access file " + file.getPath() + " contains "
+                        + result.errorCount() + " unparsable line(s); refusing to start");
+            }
             log.error("Keeping the previous access rules: {} line(s) in {} could not be parsed",
                     result.errorCount(), file.getPath());
             lastLoadModifiedTime = modifiedAfter;
@@ -312,26 +324,60 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
 
     @Override
     public void addTempBan(String addressPattern, int minutes) {
-        tempStore.addBan(addressPattern, minutes);
+        tempStore.addBan(normalizeTemporaryBanPattern(addressPattern), minutes);
     }
 
     @Override
     public void addTempAdmin(String addressPattern, int minutes) {
+        // A temporary admin grant is deliberately exact: widening it to a /64
+        // would hand admin to every address the client can rotate to.
         tempStore.addAdmin(addressPattern, minutes);
     }
 
     @Override
     public void addSilenced(String addressPattern, int minutes) {
-        tempStore.addSilence(addressPattern, minutes);
+        tempStore.addSilence(normalizeTemporaryBanPattern(addressPattern), minutes);
+    }
+
+    /**
+     * Widens a single IPv6 literal to its /64. A client normally owns an entire /64
+     * and can rotate its interface identifier, so an exact-address temporary ban or
+     * silence would be trivially evaded.
+     *
+     * @param addressPattern
+     *            an address or an existing wildcard pattern
+     * @return the /64 wildcard for a single IPv6 literal, otherwise the input
+     */
+    static String normalizeTemporaryBanPattern(String addressPattern) {
+        if (addressPattern == null || !addressPattern.contains(":") || addressPattern.contains("*")
+                || addressPattern.contains("|")) {
+            return addressPattern;
+        }
+
+        try {
+            InetAddress address = InetAddress.getByName(addressPattern);
+            if (!(address instanceof Inet6Address)) {
+                return addressPattern;
+            }
+            // getHostAddress() returns the uncompressed eight-group form, which is
+            // also what the access checks compare against.
+            String[] groups = address.getHostAddress().split(":");
+            if (groups.length != 8) {
+                return addressPattern;
+            }
+            return String.join(":", groups[0], groups[1], groups[2], groups[3]) + ":*";
+        } catch (UnknownHostException e) {
+            return addressPattern;
+        }
     }
 
     @Override
-    public synchronized String getAnnouncement(InetAddress address) {
+    public String getAnnouncement(InetAddress address) {
         return ruleStore.getUserAnnouncement(address.getHostAddress());
     }
 
     @Override
-    public synchronized int getAccess(InetAddress address) {
+    public int getAccess(InetAddress address) {
         String userAddress = address.getHostAddress();
 
         // A temporary ban counts here as well as in isAddressAllowed; otherwise the
@@ -348,17 +394,17 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
     }
 
     @Override
-    public synchronized boolean clearTemp(InetAddress address) {
+    public boolean clearTemp(InetAddress address) {
         return tempStore.clearForAddress(address.getHostAddress());
     }
 
     @Override
-    public synchronized boolean isSilenced(InetAddress address) {
+    public boolean isSilenced(InetAddress address) {
         return tempStore.isSilenced(address.getHostAddress());
     }
 
     @Override
-    public synchronized boolean isAddressAllowed(InetAddress address) {
+    public boolean isAddressAllowed(InetAddress address) {
         String userAddress = address.getHostAddress();
 
         if (tempStore.isBanned(userAddress)) {
@@ -369,12 +415,12 @@ public class FileBasedAccessManager implements AccessManager, Runnable, SmartLif
     }
 
     @Override
-    public synchronized boolean isEmulatorAllowed(String emulator) {
+    public boolean isEmulatorAllowed(String emulator) {
         return ruleStore.isEmulatorAllowed(emulator);
     }
 
     @Override
-    public synchronized boolean isGameAllowed(String game) {
+    public boolean isGameAllowed(String game) {
         return ruleStore.isGameAllowed(game);
     }
 }
