@@ -3,6 +3,7 @@ package su.kidoz.kaillera.controller.v086.protocol;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Arrays;
 
 import su.kidoz.kaillera.controller.messaging.ByteBufferMessage;
 import su.kidoz.kaillera.controller.messaging.MessageFormatException;
@@ -76,7 +77,7 @@ public class V086Bundle extends ByteBufferMessage {
         if (numToWrite < this.numToWrite)
             this.numToWrite = numToWrite;
 
-        this.messages = messages;
+        this.messages = Arrays.copyOf(messages, messages.length);
     }
 
     public String getDescription() {
@@ -88,7 +89,7 @@ public class V086Bundle extends ByteBufferMessage {
     }
 
     public V086Message[] getMessages() {
-        return messages;
+        return Arrays.copyOf(messages, messages.length);
     }
 
     public int getLength() {

@@ -2,6 +2,7 @@ package su.kidoz.kaillera.relay;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -105,7 +106,7 @@ public class KailleraRelayController extends UDPRelay {
      * Returns all active V086 relay controllers.
      */
     public Map<Integer, V086RelayController> getV086Relays() {
-        return v086Relays;
+        return Collections.unmodifiableMap(v086Relays);
     }
 
     @Override

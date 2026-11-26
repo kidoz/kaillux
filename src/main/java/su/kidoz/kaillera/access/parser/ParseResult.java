@@ -23,6 +23,29 @@ import su.kidoz.kaillera.access.rule.NameRule;
 public record ParseResult(List<AddressRule> userRules, List<AddressRule> addressRules,
         List<NameRule> gameRules, List<NameRule> emulatorRules, int errorCount) {
 
+    public ParseResult {
+        userRules = List.copyOf(userRules);
+        addressRules = List.copyOf(addressRules);
+        gameRules = List.copyOf(gameRules);
+        emulatorRules = List.copyOf(emulatorRules);
+    }
+
+    public List<AddressRule> userRules() {
+        return List.copyOf(userRules);
+    }
+
+    public List<AddressRule> addressRules() {
+        return List.copyOf(addressRules);
+    }
+
+    public List<NameRule> gameRules() {
+        return List.copyOf(gameRules);
+    }
+
+    public List<NameRule> emulatorRules() {
+        return List.copyOf(emulatorRules);
+    }
+
     /**
      * Returns the total number of rules parsed.
      */

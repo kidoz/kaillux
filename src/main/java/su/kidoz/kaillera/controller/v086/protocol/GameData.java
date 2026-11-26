@@ -65,7 +65,7 @@ public class GameData extends V086Message {
             throw new MessageFormatException("Invalid " + getDescription()
                     + " format: gameData.remaining() = " + gameData.length);
 
-        this.gameData = gameData;
+        this.gameData = gameData.clone();
     }
 
     public byte getID() {
@@ -77,7 +77,7 @@ public class GameData extends V086Message {
     }
 
     public byte[] getGameData() {
-        return gameData;
+        return gameData.clone();
     }
 
     public String toString() {

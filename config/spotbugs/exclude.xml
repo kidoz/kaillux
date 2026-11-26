@@ -14,12 +14,6 @@
         <Bug pattern="CT_CONSTRUCTOR_THROW"/>
     </Match>
 
-    <!-- Access manager inner classes - parsing validation is intentional -->
-    <Match>
-        <Class name="~su\.kidoz\.kaillera\.access\.FileBasedAccessManager\$.*"/>
-        <Bug pattern="CT_CONSTRUCTOR_THROW"/>
-    </Match>
-
     <!-- FileBasedAccessManager - file I/O exceptions are expected -->
     <Match>
         <Class name="su.kidoz.kaillera.access.FileBasedAccessManager"/>
@@ -39,35 +33,73 @@
     </Match>
 
     <!--
-        HE_EQUALS_USE_HASHCODE: equals() without hashCode()
-
-        These exception/model classes are not used in collections.
-    -->
-    <Match>
-        <Class name="su.kidoz.kaillera.model.impl.PlayerTimeoutException"/>
-        <Bug pattern="HE_EQUALS_USE_HASHCODE"/>
-    </Match>
-    <Match>
-        <Class name="su.kidoz.kaillera.model.impl.KailleraUserImpl"/>
-        <Bug pattern="HE_EQUALS_USE_HASHCODE"/>
-    </Match>
-
-    <!--
-        Test source exclusions - these are acceptable patterns in test code
+        Test source exclusions - these are acceptable patterns in test code.
+        RV_RETURN_VALUE_IGNORED_NO_SIDE_EFFECT stays enabled: a test that
+        ignores a result with no side effect is usually a missing assertion.
     -->
     <Match>
         <Source name="~.*Test\.java"/>
-        <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE,DLS_DEAD_LOCAL_STORE,RV_RETURN_VALUE_IGNORED_NO_SIDE_EFFECT,RV_RETURN_VALUE_IGNORED,BC_VACUOUS_INSTANCEOF,REC_CATCH_EXCEPTION"/>
+        <Bug pattern="RV_RETURN_VALUE_IGNORED_BAD_PRACTICE,DLS_DEAD_LOCAL_STORE,RV_RETURN_VALUE_IGNORED,BC_VACUOUS_INSTANCEOF,REC_CATCH_EXCEPTION"/>
     </Match>
 
     <!--
-        EI_EXPOSE_REP / EI_EXPOSE_REP2: May expose internal representation
+        EI_EXPOSE_REP / EI_EXPOSE_REP2: May expose internal representation.
 
-        These are common in configuration, DTO, event, and model classes where
-        returning the actual object reference is intentional. The codebase uses
-        internal objects that are safe to share within the application.
+        Configuration, DTO, and model classes return their fields directly
+        because callers in this process share those objects. Other packages
+        stay checked.
     -->
     <Match>
+        <Or>
+            <Package name="su.kidoz.config"/>
+            <Package name="su.kidoz.kaillera.admin.dto"/>
+            <Package name="~su\.kidoz\.kaillera\.model(\..*)?"/>
+        </Or>
         <Bug pattern="EI_EXPOSE_REP,EI_EXPOSE_REP2"/>
+    </Match>
+
+    <!--
+        Constructors keep the collaborator they were given. Copying a server,
+        controller, client, or collector would be a different object.
+        InetAddress is immutable, and SpotBugs still treats it as mutable.
+    -->
+    <Match>
+        <Or>
+            <Class name="su.kidoz.kaillera.admin.AdminRestController"/>
+            <Class name="su.kidoz.kaillera.admin.AdminApiClient"/>
+            <Class name="su.kidoz.kaillera.controller.connectcontroller.ConnectController"/>
+            <Class name="su.kidoz.kaillera.controller.v086.V086ClientHandler"/>
+            <Class name="su.kidoz.kaillera.controller.v086.V086Controller"/>
+            <Class name="su.kidoz.kaillera.master.client.EmuLinkerMasterUpdateTask"/>
+            <Class name="su.kidoz.kaillera.master.client.KailleraMasterUpdateTask"/>
+            <Class name="su.kidoz.kaillera.master.client.MasterListUpdaterImpl"/>
+            <Class name="su.kidoz.kaillera.metrics.ServerMetrics"/>
+            <Class name="su.kidoz.kaillera.service.ChatModerationService"/>
+            <Class name="su.kidoz.kaillera.service.impl.GameServiceImpl"/>
+            <Class name="su.kidoz.kaillera.service.impl.UserServiceImpl"/>
+            <Class name="su.kidoz.net.PrivateUDPServer"/>
+        </Or>
+        <Bug pattern="EI_EXPOSE_REP2"/>
+    </Match>
+
+    <!--
+        These getters hand back the shared object callers already use:
+        session caches, the logged-in user, metrics, and the bound address.
+    -->
+    <Match>
+        <Or>
+            <Class name="su.kidoz.kaillera.controller.v086.V086ClientHandler"/>
+            <Class name="su.kidoz.kaillera.metrics.ServerMetrics"/>
+            <Class name="su.kidoz.net.PrivateUDPServer"/>
+            <Class name="su.kidoz.net.UDPServer"/>
+            <Class name="su.kidoz.kaillera.load.MockKailleraClient"/>
+        </Or>
+        <Bug pattern="EI_EXPOSE_REP"/>
+    </Match>
+
+    <Match>
+        <Class name="su.kidoz.kaillera.controller.v086.V086Controller"/>
+        <Method name="getServer"/>
+        <Bug pattern="EI_EXPOSE_REP"/>
     </Match>
 </FindBugsFilter>

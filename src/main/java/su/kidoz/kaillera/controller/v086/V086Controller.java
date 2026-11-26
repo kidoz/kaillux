@@ -3,6 +3,7 @@ package su.kidoz.kaillera.controller.v086;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
@@ -74,7 +75,7 @@ public final class V086Controller implements KailleraServerController, SmartLife
     }
 
     public String[] getClientTypes() {
-        return clientTypes;
+        return clientTypes.clone();
     }
 
     public KailleraServer getServer() {
@@ -110,7 +111,7 @@ public final class V086Controller implements KailleraServerController, SmartLife
     }
 
     public Map<Integer, V086ClientHandler> getClientHandlers() {
-        return clientHandlers;
+        return Collections.unmodifiableMap(clientHandlers);
     }
 
     /**

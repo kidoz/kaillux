@@ -45,14 +45,14 @@ public abstract class TimedAccessRule {
         while (tokenizer.hasMoreTokens()) {
             result.add(new WildcardStringPattern(tokenizer.nextToken()));
         }
-        return result;
+        return List.copyOf(result);
     }
 
     /**
      * Returns the compiled wildcard patterns.
      */
     public List<WildcardStringPattern> getPatterns() {
-        return patterns;
+        return List.copyOf(patterns);
     }
 
     /**

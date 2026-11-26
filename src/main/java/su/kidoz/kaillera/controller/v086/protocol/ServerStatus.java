@@ -20,8 +20,8 @@ public class ServerStatus extends V086Message {
             throws MessageFormatException {
         super(messageNumber);
 
-        this.users = users;
-        this.games = games;
+        this.users = List.copyOf(users);
+        this.games = List.copyOf(games);
     }
 
     public byte getID() {
@@ -33,11 +33,11 @@ public class ServerStatus extends V086Message {
     }
 
     public List getUsers() {
-        return users;
+        return List.copyOf(users);
     }
 
     public List getGames() {
-        return games;
+        return List.copyOf(games);
     }
 
     public String toString() {

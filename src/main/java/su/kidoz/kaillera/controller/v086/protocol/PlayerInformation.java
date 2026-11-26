@@ -18,7 +18,7 @@ public class PlayerInformation extends V086Message {
     public PlayerInformation(int messageNumber, List<Player> players)
             throws MessageFormatException {
         super(messageNumber);
-        this.players = players;
+        this.players = List.copyOf(players);
     }
 
     public byte getID() {
@@ -34,7 +34,7 @@ public class PlayerInformation extends V086Message {
     }
 
     public List<Player> getPlayers() {
-        return players;
+        return List.copyOf(players);
     }
 
     public String toString() {

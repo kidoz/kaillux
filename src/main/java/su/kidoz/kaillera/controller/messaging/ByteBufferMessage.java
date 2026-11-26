@@ -58,7 +58,7 @@ public abstract class ByteBufferMessage {
         initBuffer();
         writeTo(buffer);
         buffer.flip();
-        return buffer;
+        return buffer.duplicate();
     }
 
     public abstract void writeTo(ByteBuffer buffer);
