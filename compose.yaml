@@ -43,6 +43,10 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # The server writes only the extracted access file under /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp
     # The server logs to the container's stdout; keep it from filling the disk.
     logging:
       driver: json-file

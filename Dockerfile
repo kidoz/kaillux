@@ -56,6 +56,9 @@ COPY --from=build /app/src/main/resources/access.cfg .
 
 # Use IPv4 only (avoids dual-stack bind conflicts in container environments)
 ENV CONTROLLERS_BIND_ADDRESSES=0.0.0.0
+# The published port must reach the container, so the HTTP listener cannot use
+# the loopback default. Compose publishes it on the host's loopback only.
+ENV SERVER_ADDRESS=0.0.0.0
 
 # Admin UI
 EXPOSE 8080/tcp
