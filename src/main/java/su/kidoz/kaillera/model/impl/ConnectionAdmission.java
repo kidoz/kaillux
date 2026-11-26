@@ -1,15 +1,13 @@
 package su.kidoz.kaillera.model.impl;
 
 import java.net.InetAddress;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import su.kidoz.config.ServerConfig;
 import su.kidoz.kaillera.access.AccessManager;
 import su.kidoz.kaillera.model.exception.ServerFullException;
+import su.kidoz.util.AddressRateLimiter;
 import su.kidoz.util.EmuLang;
 import su.kidoz.util.ThrottledLogger;
 
@@ -24,10 +22,7 @@ public final class ConnectionAdmission {
     private static final Logger log = LoggerFactory.getLogger(ConnectionAdmission.class);
     // One line per denied HELLO is a log flood for anyone who can send packets.
     private static final ThrottledLogger DENIED_LOG = new ThrottledLogger(log, "denied handshake");
-    private static final int STALE_WINDOW_MS = 2_000;
-    private static final int MAX_TRACKED_ADDRESSES = 2_048;
-
-    private final ConcurrentHashMap<String, RateWindow> helloWindows = new ConcurrentHashMap<>();
+    private final AddressRateLimiter helloLimiter = new AddressRateLimiter();
 
     /**
      * Accepts the connection or throws when a cap or the hello rate is exceeded.
@@ -36,11 +31,18 @@ public final class ConnectionAdmission {
      * Callers must hold the connection lock so the counts cannot change between the
      * check and inserting the new user.
      */
-    public void admit(InetAddress address, int access, int loggedIn, int connecting,
-            int connectingFromAddress, ServerConfig config) throws ServerFullException {
+    public void admit(InetAddress address, int access, int loggedIn, int loggedInFromAddress,
+            int connecting, int connectingFromAddress, ServerConfig config)
+            throws ServerFullException {
         int maxUsers = config.getMaxUsers();
         if (maxUsers > 0 && loggedIn >= maxUsers && access <= AccessManager.ACCESS_NORMAL) {
             deny(address, "logged-in user limit reached");
+        }
+
+        int maxUsersPerAddress = config.getMaxUsersPerAddress();
+        if (maxUsersPerAddress > 0 && loggedInFromAddress >= maxUsersPerAddress
+                && access <= AccessManager.ACCESS_NORMAL) {
+            deny(address, "per-address logged-in user limit reached");
         }
 
         int maxConnecting = config.getMaxConnecting();
@@ -53,7 +55,7 @@ public final class ConnectionAdmission {
             deny(address, "per-address connecting limit reached");
         }
 
-        if (!allowHello(address, config.getHelloRatePerSecond())) {
+        if (!helloLimiter.allow(address, config.getHelloRatePerSecond())) {
             deny(address, "hello rate limit reached");
         }
     }
@@ -65,46 +67,4 @@ public final class ConnectionAdmission {
                 EmuLang.getString("KailleraServerImpl.LoginDeniedServerFull"));
     }
 
-    private boolean allowHello(InetAddress address, int ratePerSecond) {
-        if (ratePerSecond <= 0 || address == null) {
-            return true;
-        }
-
-        long now = System.currentTimeMillis();
-        if (helloWindows.size() > MAX_TRACKED_ADDRESSES) {
-            sweep(now);
-        }
-
-        int[] observed = new int[1];
-        helloWindows.compute(address.getHostAddress(), (key, existing) -> {
-            if (existing == null || now - existing.startMs >= 1_000L) {
-                observed[0] = 1;
-                return new RateWindow(now, 1);
-            }
-            int next = existing.count + 1;
-            observed[0] = next;
-            return new RateWindow(existing.startMs, next);
-        });
-        return observed[0] <= ratePerSecond;
-    }
-
-    private void sweep(long now) {
-        Iterator<Map.Entry<String, RateWindow>> iterator = helloWindows.entrySet().iterator();
-        while (iterator.hasNext()) {
-            RateWindow window = iterator.next().getValue();
-            if (now - window.startMs >= STALE_WINDOW_MS) {
-                iterator.remove();
-            }
-        }
-    }
-
-    private static final class RateWindow {
-        private final long startMs;
-        private final int count;
-
-        private RateWindow(long startMs, int count) {
-            this.startMs = startMs;
-            this.count = count;
-        }
-    }
 }

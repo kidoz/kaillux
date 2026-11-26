@@ -113,6 +113,34 @@ public final class ThrottledLogger {
     }
 
     /**
+     * Writes an INFO when this call site is still within its budget.
+     *
+     * @param format
+     *            the SLF4J message format
+     * @param args
+     *            the format arguments
+     */
+    public void info(String format, Object... args) {
+        if (admit()) {
+            log.info(format, args);
+        }
+    }
+
+    /**
+     * Writes a DEBUG when this call site is still within its budget.
+     *
+     * @param format
+     *            the SLF4J message format
+     * @param args
+     *            the format arguments
+     */
+    public void debug(String format, Object... args) {
+        if (admit()) {
+            log.debug(format, args);
+        }
+    }
+
+    /**
      * Writes an ERROR with a stack trace when this call site is still within its
      * budget.
      *

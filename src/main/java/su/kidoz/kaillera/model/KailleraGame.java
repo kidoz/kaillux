@@ -3,7 +3,6 @@ package su.kidoz.kaillera.model;
 import java.util.Collection;
 
 import su.kidoz.kaillera.model.event.GameEvent;
-import su.kidoz.kaillera.model.impl.AutoFireDetector;
 import su.kidoz.kaillera.model.exception.CloseGameException;
 import su.kidoz.kaillera.model.exception.DropGameException;
 import su.kidoz.kaillera.model.exception.GameChatException;

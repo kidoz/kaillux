@@ -64,6 +64,7 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
     private volatile InetSocketAddress clientSocketAddress;
     private volatile int status;
     private volatile boolean loggedIn;
+    private volatile boolean quitting;
     private volatile String toString;
     private volatile int access;
     private volatile boolean emulinkerClient;
@@ -74,6 +75,7 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
     private volatile long lastChatTime;
     private volatile long lastGameChatTime;
     private volatile long lastCreateGameTime;
+    private volatile long lastJoinGameTime;
     private volatile long lastTimeout;
 
     private volatile int playerNumber = -1;
@@ -151,8 +153,21 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         if (!loggedIn) {
             return false;
         }
+        // The user is leaving the server, not just a game. Game cleanup still needs
+        // to close an owned room, which normally rejects logged-out users.
+        quitting = true;
         loggedIn = false;
         return true;
+    }
+
+    /**
+     * True once quit has been accepted for this user. The flag stays set for the
+     * short remainder of the session so game cleanup can finish.
+     *
+     * @return true while the user is leaving the server
+     */
+    public boolean isQuitting() {
+        return quitting;
     }
 
     /**
@@ -378,7 +393,9 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
         }
 
         synchronized (this) {
-            addEvent(new StopFlagEvent());
+            // Internal shutdown signal; it must not count as a dropped client event
+            // when the queue is already full.
+            eventQueue.offer(new StopFlagEvent());
         }
 
         KailleraEventListener l = eventDispatcher.getListener();
@@ -457,6 +474,11 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
     public synchronized KailleraGame joinGame(int gameID) throws JoinGameException {
         updateLastActivity();
 
+        if (!loggedIn) {
+            log.debug(this + " join game failed: Not logged in");
+            throw new JoinGameException(EmuLang.getString("KailleraServerImpl.NotLoggedIn"));
+        }
+
         if (game != null) {
             log.debug(this + " join game failed: Already in: " + game);
             throw new JoinGameException(
@@ -471,6 +493,18 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
             throw new JoinGameException(
                     EmuLang.getString("KailleraUserImpl.JoinGameErrorNotFullConnected"));
         }
+
+        // Join/leave cycles broadcast lobby events to every user. Limit them the way
+        // createGame is limited so one client cannot force a room-wide fan-out at
+        // packet rate.
+        long now = System.currentTimeMillis();
+        int joinFloodSeconds = server.getJoinGameFloodTime();
+        if (joinFloodSeconds > 0 && now - lastJoinGameTime < joinFloodSeconds * 1000L) {
+            log.debug(this + " join game failed: flood control");
+            throw new JoinGameException(
+                    EmuLang.getString("KailleraServerImpl.CreateGameDeniedFloodControl"));
+        }
+        lastJoinGameTime = now;
 
         KailleraGameImpl game = (KailleraGameImpl) server.getGame(gameID);
         if (game == null) {
@@ -536,21 +570,26 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
             // while still marked as playing. Let them create/join games again.
             if (status == KailleraUser.STATUS_PLAYING)
                 setStatus(KailleraUser.STATUS_IDLE);
+            setGame(null);
             return;
         }
 
-        if (status == KailleraUser.STATUS_PLAYING) {
-            currentGame.drop(this, currentPlayerNumber);
-            setStatus(KailleraUser.STATUS_IDLE);
+        // Both steps must be attempted, and the user must be detached even when a
+        // step fails: a stale game reference keeps the user out of every future game.
+        try {
+            if (status == KailleraUser.STATUS_PLAYING)
+                currentGame.drop(this, currentPlayerNumber);
+        } finally {
+            try {
+                currentGame.quit(this, currentPlayerNumber);
+            } finally {
+                if (status != KailleraUser.STATUS_IDLE)
+                    setStatus(KailleraUser.STATUS_IDLE);
+
+                setGame(null);
+                addEvent(new UserQuitGameEvent(currentGame, this));
+            }
         }
-
-        currentGame.quit(this, currentPlayerNumber);
-
-        if (status != KailleraUser.STATUS_IDLE)
-            setStatus(KailleraUser.STATUS_IDLE);
-
-        setGame(null);
-        addEvent(new UserQuitGameEvent(currentGame, this));
     }
 
     public synchronized void startGame() throws StartGameException {
@@ -629,6 +668,9 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
     }
 
     private static final int CRITICAL_EVENT_TIMEOUT_MS = 100;
+    // A client that cannot drain its queue must reconnect rather than keep an
+    // arbitrarily stale lobby view forever.
+    private static final int MAX_DROPPED_EVENTS_BEFORE_DISCONNECT = 50;
 
     @Override
     public void addEvent(KailleraEvent event) {
@@ -665,6 +707,10 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
                         event.getClass().getSimpleName(), dropped);
             } else if (dropped == DROPPED_EVENTS_LOG_THRESHOLD + 1) {
                 QUEUE_LOG.warn("{}: suppressing further event drop warnings", this);
+            }
+            if (droppedEventsCount.get() >= MAX_DROPPED_EVENTS_BEFORE_DISCONNECT) {
+                QUEUE_LOG.error("{}: event queue stayed full, closing the connection", this);
+                stop();
             }
         } else {
             // Reset counter on successful add
@@ -711,7 +757,11 @@ public final class KailleraUserImpl implements KailleraUser, Executable {
                     log.error(this + " failed to dispatch event: " + event, e);
                 }
 
-                if (event instanceof GameStartedEvent) {
+                if (event instanceof GameStartedEvent startedEvent
+                        && startedEvent.getGame() == getGame()) {
+                    // A queued start event can outlive its game. Applying it blindly
+                    // would leave the user marked PLAYING with no game and lock them
+                    // out of createGame()/joinGame().
                     setStatus(KailleraUser.STATUS_PLAYING);
                 } else if (event instanceof UserQuitEvent quitEvent
                         && quitEvent.getUser().equals(this)) {

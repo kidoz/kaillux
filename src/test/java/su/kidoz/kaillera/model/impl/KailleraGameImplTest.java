@@ -97,6 +97,17 @@ class KailleraGameImplTest {
         }
 
         @Test
+        @DisplayName("a silenced user cannot send game chat")
+        void aSilencedUserCannotSendGameChat() {
+            when(accessManager.isSilenced(any())).thenReturn(true);
+            int queued = owner.getEventQueueSize();
+
+            assertThrows(GameChatException.class, () -> game.chat(owner, "hello team"));
+
+            assertEquals(queued, owner.getEventQueueSize(), "nothing may be relayed");
+        }
+
+        @Test
         @DisplayName("a printable message is relayed, and the next one at once is flood")
         void aPrintableMessageIsRelayedAndTheNextAtOnceIsFlood() throws Exception {
             int queued = owner.getEventQueueSize();
@@ -520,6 +531,36 @@ class KailleraGameImplTest {
                 assertDoesNotThrow(() -> player2Future.get(2, TimeUnit.SECONDS));
             } finally {
                 executor.shutdownNow();
+            }
+        }
+
+        @Test
+        @DisplayName("a player leaving an active round resets the room instead of corrupting frames")
+        void aPlayerLeavingAnActiveRoundResetsTheRoom() throws Exception {
+            assertEquals(KailleraGame.STATUS_PLAYING, game.getStatus());
+
+            game.quit(player2, 2);
+
+            assertEquals(KailleraGame.STATUS_WAITING, game.getStatus(),
+                    "the round must not stay synchronized with a departed slot");
+            assertFalse(game.isSynched());
+            assertEquals(-1, owner.getPlayerNumber(), "player numbers belong to the old round");
+        }
+
+        @Test
+        @DisplayName("addData returns without waiting for a lagging player")
+        void addDataDoesNotBlockOnALaggingPlayer() throws Exception {
+            var pool = new su.kidoz.util.EmuLinkerExecutor();
+            when(server.getThreadPool()).thenReturn(pool);
+            try {
+                long started = System.nanoTime();
+                game.addData(owner, 1, new byte[]{1, 2, 3, 4});
+                long elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
+
+                assertTrue(elapsedMillis < 500,
+                        "assembly must run off the caller thread, took " + elapsedMillis + "ms");
+            } finally {
+                pool.shutdownNow();
             }
         }
 

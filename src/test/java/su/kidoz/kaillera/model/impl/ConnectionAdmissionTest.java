@@ -20,11 +20,11 @@ class ConnectionAdmissionTest {
         InetAddress address = InetAddress.getByName("10.1.1.1");
 
         assertThrows(ServerFullException.class,
-                () -> admission.admit(address, AccessManager.ACCESS_NORMAL, 1, 0, 0, config));
+                () -> admission.admit(address, AccessManager.ACCESS_NORMAL, 1, 0, 0, 0, config));
         assertDoesNotThrow(
-                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 1, 0, 0, config));
+                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 1, 0, 0, 0, config));
         assertThrows(ServerFullException.class,
-                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 0, 2, 0, config));
+                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 0, 0, 2, 0, config));
     }
 
     @Test
@@ -34,9 +34,9 @@ class ConnectionAdmissionTest {
         InetAddress address = InetAddress.getByName("10.2.2.2");
 
         assertDoesNotThrow(
-                () -> admission.admit(address, AccessManager.ACCESS_NORMAL, 0, 0, 0, config));
+                () -> admission.admit(address, AccessManager.ACCESS_NORMAL, 0, 0, 0, 0, config));
         assertThrows(ServerFullException.class,
-                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 0, 1, 1, config));
+                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 0, 0, 1, 1, config));
     }
 
     @Test
@@ -46,9 +46,24 @@ class ConnectionAdmissionTest {
         InetAddress address = InetAddress.getByName("10.3.3.3");
 
         assertDoesNotThrow(
-                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 0, 0, 0, config));
+                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 0, 0, 0, 0, config));
         assertThrows(ServerFullException.class,
-                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 0, 0, 0, config));
+                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 0, 0, 0, 0, config));
+    }
+
+    @Test
+    void oneAddressCannotFillEveryLoggedInSlot() throws Exception {
+        ServerConfig config = config(25, 10, 10, 0);
+        config.setMaxUsersPerAddress(2);
+        ConnectionAdmission admission = new ConnectionAdmission();
+        InetAddress address = InetAddress.getByName("10.4.4.4");
+
+        assertDoesNotThrow(
+                () -> admission.admit(address, AccessManager.ACCESS_NORMAL, 2, 1, 0, 0, config));
+        assertThrows(ServerFullException.class,
+                () -> admission.admit(address, AccessManager.ACCESS_NORMAL, 2, 2, 0, 0, config));
+        assertDoesNotThrow(
+                () -> admission.admit(address, AccessManager.ACCESS_ADMIN, 2, 2, 0, 0, config));
     }
 
     private static ServerConfig config(int maxUsers, int maxConnecting, int perAddress,

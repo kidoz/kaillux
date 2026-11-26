@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
+import su.kidoz.kaillera.model.AutoFireDetector;
 import su.kidoz.config.GameConfig;
 import su.kidoz.config.ServerConfig;
 import su.kidoz.config.ServerConfigs;
@@ -99,7 +100,7 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
     private final UserManager userManager;
     private final GameManager gameManager;
     private final GameMetricsCollector gameMetricsCollector;
-    private ServerMaintenanceTask maintenanceTask;
+    private volatile ServerMaintenanceTask maintenanceTask;
 
     // Fine-grained locks replacing coarse synchronized(this)
     private final Lock serverLifecycleLock = new ReentrantLock();
@@ -239,7 +240,20 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
             log.debug("KailleraServer thread starting (ThreadPool:" + threadPool.getActiveCount()
                     + "/" + threadPool.getPoolSize() + ")");
             stopFlag = false;
-            threadPool.execute(this);
+            // Build the task and latch the running state before submitting, so a
+            // stop() that races with startup cannot miss the worker.
+            maintenanceTask = new ServerMaintenanceTask(userManager, accessManager,
+                    serverConfig.getMaxPing(), serverConfig.getKeepAliveTimeout(),
+                    serverConfig.getIdleTimeout(), this::handleQuitRequest);
+            isRunning = true;
+            try {
+                threadPool.execute(this);
+            } catch (RuntimeException e) {
+                isRunning = false;
+                stopFlag = true;
+                maintenanceTask = null;
+                throw e;
+            }
             log.info("KailleraServer started");
         } finally {
             serverLifecycleLock.unlock();
@@ -252,7 +266,7 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
         try {
             log.debug("KailleraServer thread received stop request!");
 
-            if (!isRunning()) {
+            if (!isRunning && maintenanceTask == null) {
                 log.debug("KailleraServer thread stop request ignored: not running!");
                 return;
             }
@@ -264,6 +278,7 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
 
             userManager.stopAllUsers();
             gameManager.clear();
+            isRunning = false;
             log.info("KailleraServer stopped");
         } finally {
             serverLifecycleLock.unlock();
@@ -289,10 +304,10 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
     }
 
     AutoFireDetector getAutoFireDetector(KailleraGame game) {
-        int sensitivity = gameConfig.getDefaultAutoFireSensitivity();
-        if (sensitivity == 0)
-            return null;
-        return autoFireDetectorFactory.getInstance(game, sensitivity);
+        // Always create the detector. A zero default means "off", not "unavailable":
+        // a room owner can enable it while the room is waiting.
+        return autoFireDetectorFactory.getInstance(game,
+                gameConfig.getDefaultAutoFireSensitivity());
     }
 
     public ReleaseInfo getReleaseInfo() {
@@ -312,23 +327,28 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
         connectionLock.lock();
         try {
             int loggedIn = 0;
+            int loggedInFromAddress = 0;
             int connecting = 0;
             int connectingFromAddress = 0;
             for (KailleraUserImpl existing : userManager.getUsers()) {
+                boolean sameAddress = clientSocketAddress.getAddress()
+                        .equals(existing.getConnectSocketAddress().getAddress());
                 if (existing.isLoggedIn()) {
                     loggedIn++;
+                    if (sameAddress) {
+                        loggedInFromAddress++;
+                    }
                 } else {
                     connecting++;
-                    if (clientSocketAddress.getAddress()
-                            .equals(existing.getConnectSocketAddress().getAddress())) {
+                    if (sameAddress) {
                         connectingFromAddress++;
                     }
                 }
             }
-            // Elevated and admin clients still bypass the logged-in cap.
+            // Elevated and admin clients still bypass the logged-in caps.
             // Connecting caps and the hello rate apply to every address.
             connectionAdmission.admit(clientSocketAddress.getAddress(), access, loggedIn,
-                    connecting, connectingFromAddress, serverConfig);
+                    loggedInFromAddress, connecting, connectingFromAddress, serverConfig);
 
             int userID;
             try {
@@ -372,7 +392,7 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
 
         int userID = user.getID();
 
-        KailleraUserImpl reconnectUser = null;
+        KailleraUser reconnectUser = null;
 
         connectionLock.lock();
         try {
@@ -420,8 +440,7 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
             // path holds that monitor and then takes connectionLock; doing the forced
             // quit under connectionLock would invert the lock order and deadlock.
             try {
-                quitInternal(reconnectUser,
-                        EmuLang.getString("KailleraServerImpl.ForcedQuitReconnected"));
+                quit(reconnectUser, EmuLang.getString("KailleraServerImpl.ForcedQuitReconnected"));
             } catch (Exception e) {
                 log.error("Error forcing " + reconnectUser + " quit for reconnect!", e);
             }
@@ -454,11 +473,17 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
 
     public void quit(KailleraUser user, String message)
             throws QuitException, DropGameException, QuitGameException, CloseGameException {
-        connectionLock.lock();
-        try {
-            quitInternal(user, message);
-        } finally {
-            connectionLock.unlock();
+        // Lock order is user monitor, then connectionLock. The user's own login(),
+        // quit(), and game actions hold that monitor while entering the server;
+        // admin and maintenance callers take connectionLock from outside, so they
+        // must acquire the user monitor first or the two orders deadlock.
+        synchronized (user) {
+            connectionLock.lock();
+            try {
+                quitInternal(user, message);
+            } finally {
+                connectionLock.unlock();
+            }
         }
     }
 
@@ -481,8 +506,15 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
             if (userManager.removeUser(user.getID()) == null)
                 log.error(user + " quit failed: not in user list");
 
-            if (user.getGame() != null)
-                user.quitGame();
+            // Best effort: the quit broadcast and transport close must still run when
+            // the game state was already inconsistent. quitGame() detaches the user
+            // in its finally block, so a failure here cannot leave a stale game.
+            try {
+                if (user.getGame() != null)
+                    user.quitGame();
+            } catch (DropGameException | QuitGameException | CloseGameException e) {
+                log.error(user + " quit game cleanup failed: " + e, e);
+            }
 
             String quitMsg = message.trim();
             int maxLen = serverConfig.getMaxQuitMessageLength();
@@ -518,6 +550,10 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
 
     public int getChatFloodTime() {
         return serverConfig.getChatFloodTime();
+    }
+
+    int getJoinGameFloodTime() {
+        return serverConfig.getJoinGameFloodTime();
     }
 
     public KailleraGame createGame(KailleraUser user, String romName)
@@ -630,7 +666,10 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
     }
 
     void closeGame(KailleraGame game, KailleraUser user) throws CloseGameException {
-        if (!user.isLoggedIn()) {
+        // A user who is quitting has already cleared loggedIn so that late packets
+        // cannot act, but an owned room must still be closed and removed.
+        boolean quitting = user instanceof KailleraUserImpl impl && impl.isQuitting();
+        if (!user.isLoggedIn() && !quitting) {
             log.debug(user + " close " + game + " failed: Not logged in");
             throw new CloseGameException(EmuLang.getString("KailleraServerImpl.NotLoggedIn"));
         }
@@ -654,31 +693,6 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
     }
 
     @Override
-    public boolean closeEmptyGame(int gameId) {
-        gameLock.lock();
-        try {
-            KailleraGame game = gameManager.getGame(gameId);
-            if (game == null) {
-                return false;
-            }
-
-            if (game.getNumPlayers() > 0) {
-                log.warn("Cannot close game {} with {} active players", gameId,
-                        game.getNumPlayers());
-                return false;
-            }
-
-            gameManager.removeGame(gameId);
-            gameMetricsCollector.recordGameCompleted(gameId);
-            log.info("Admin closed empty game: {}", game.getRomName());
-            addEvent(new GameClosedEvent(this, game));
-            return true;
-        } finally {
-            gameLock.unlock();
-        }
-    }
-
-    @Override
     public void announce(String announcement, boolean gamesAlso) {
         announcementService.announce(announcement, gamesAlso, getUsers(), getGames());
     }
@@ -695,15 +709,13 @@ public class KailleraServerImpl implements KailleraServer, Runnable, SmartLifecy
     }
 
     public void run() {
-        isRunning = true;
         log.debug("KailleraServer thread running...");
 
+        ServerMaintenanceTask task = maintenanceTask;
         try {
-            // Create and run maintenance task - it will handle timeouts, bans, etc.
-            maintenanceTask = new ServerMaintenanceTask(userManager, accessManager,
-                    serverConfig.getMaxPing(), serverConfig.getKeepAliveTimeout(),
-                    serverConfig.getIdleTimeout(), this::handleQuitRequest);
-            maintenanceTask.run();
+            if (task == null || stopFlag)
+                return;
+            task.run();
         } catch (RuntimeException e) {
             if (!stopFlag)
                 log.error("KailleraServer thread caught unexpected exception: " + e, e);

@@ -2,13 +2,17 @@ package su.kidoz.kaillera.model.impl;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import su.kidoz.kaillera.model.AutoFireDetector;
 import su.kidoz.kaillera.access.AccessManager;
 import su.kidoz.kaillera.master.StatsCollector;
 import su.kidoz.kaillera.metrics.GameMetricsCollector;
@@ -37,6 +41,7 @@ import su.kidoz.kaillera.model.exception.StartGameException;
 import su.kidoz.kaillera.model.exception.UserReadyException;
 import su.kidoz.kaillera.model.validation.InputValidator;
 import su.kidoz.util.EmuLang;
+import su.kidoz.util.EmuLinkerExecutor;
 import su.kidoz.util.ThrottledLogger;
 
 public final class KailleraGameImpl implements KailleraGame {
@@ -45,6 +50,8 @@ public final class KailleraGameImpl implements KailleraGame {
     // must stay bounded.
     private static final ThrottledLogger DENIED_LOG = new ThrottledLogger(log,
             "denied game request");
+    private static final ThrottledLogger DROPPED_LOG = new ThrottledLogger(log,
+            "player drop request");
 
     // ReadWriteLock for concurrent read access, exclusive write access
     private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
@@ -72,7 +79,17 @@ public final class KailleraGameImpl implements KailleraGame {
     private volatile boolean synched = false;
     private volatile int actionsPerMessage;
     private volatile PlayerActionQueue[] playerActionQueues;
+    // Every player must use the same action stride, or the combined frame is
+    // misaligned for everyone after the first slot.
+    private volatile int acceptedBytesPerAction = -1;
     private AutoFireDetector autoFireDetector;
+
+    // Frame assembly waits for every player's input. It must never run on the
+    // sender's UDP receive thread, or one lagging player stalls that client's
+    // keepalives, chat, and new input. Tasks run serially per game so frames are
+    // delivered in submission order.
+    private final Queue<Runnable> assemblyTasks = new ConcurrentLinkedQueue<>();
+    private final AtomicBoolean assemblyDrainScheduled = new AtomicBoolean();
 
     public KailleraGameImpl(int gameID, String romName, KailleraUserImpl owner,
             KailleraServerImpl server, int bufferSize, int timeoutMillis, int desynchTimeouts) {
@@ -255,6 +272,14 @@ public final class KailleraGameImpl implements KailleraGame {
             }
 
             if (access <= AccessManager.ACCESS_NORMAL) {
+                // Silence applies to game chat too; the lobby and game paths must not
+                // diverge on who is allowed to speak.
+                if (server.getAccessManager().isSilenced(user.getSocketAddress().getAddress())) {
+                    DENIED_LOG.warn("{}: game chat denied: Silenced", user);
+                    throw new GameChatException(
+                            EmuLang.getString("KailleraServerImpl.ChatDeniedSilenced"));
+                }
+
                 KailleraUserImpl sender = (KailleraUserImpl) user;
                 int floodSeconds = server.getChatFloodTime();
                 if (floodSeconds > 0 && System.currentTimeMillis()
@@ -381,17 +406,12 @@ public final class KailleraGameImpl implements KailleraGame {
             log.info(user + " joined: " + this);
             addEvent(new UserJoinedGameEvent(this, user));
 
-            if (user.equals(owner)) {
-                if (autoFireDetector != null) {
-                    if (autoFireDetector.getSensitivity() > 0) {
-                        announce(EmuLang.getString("KailleraGameImpl.AutofireDetectionOn"));
-                        announce(EmuLang.getString("KailleraGameImpl.AutofireCurrentSensitivity",
-                                autoFireDetector.getSensitivity()));
-                    } else {
-                        announce(EmuLang.getString("KailleraGameImpl.AutofireDetectionOff"));
-                    }
-                    announce(EmuLang.getString("KailleraGameImpl.GameHelp"));
-                }
+            if (user.equals(owner) && autoFireDetector != null
+                    && autoFireDetector.getSensitivity() > 0) {
+                announce(EmuLang.getString("KailleraGameImpl.AutofireDetectionOn"));
+                announce(EmuLang.getString("KailleraGameImpl.AutofireCurrentSensitivity",
+                        autoFireDetector.getSensitivity()));
+                announce(EmuLang.getString("KailleraGameImpl.GameHelp"));
             }
 
             return (players.indexOf(user) + 1);
@@ -467,6 +487,8 @@ public final class KailleraGameImpl implements KailleraGame {
 
             log.info(user + " started: " + this);
             setStatus(KailleraGame.STATUS_SYNCHRONIZING);
+            acceptedBytesPerAction = -1;
+            assemblyTasks.clear();
 
             if (autoFireDetector != null)
                 autoFireDetector.start(players.size());
@@ -527,7 +549,10 @@ public final class KailleraGameImpl implements KailleraGame {
             log.info(user + " (player " + playerNumber + ") is ready to play: " + this);
             playerActionQueues[(playerNumber - 1)].setSynched(true);
 
-            if (getSynchedCount() == getNumPlayers()) {
+            // Compare against the queue snapshot taken at start(), not the live
+            // player list: a departing player must not make the remaining players
+            // look ready with a stale slot count.
+            if (getSynchedCount() == playerActionQueues.length) {
                 log.info(this + " all players are ready: starting...");
 
                 setStatus(KailleraGame.STATUS_PLAYING);
@@ -562,7 +587,7 @@ public final class KailleraGameImpl implements KailleraGame {
                         EmuLang.getString("KailleraGameImpl.DropGameErrorInternalError"));
             }
 
-            log.info(user + " dropped: " + this);
+            DROPPED_LOG.info(user + " dropped: " + this);
             playerActionQueues[(playerNumber - 1)].setSynched(false);
             if (gameMetricsCollector != null)
                 gameMetricsCollector.recordPlayerDropped();
@@ -580,8 +605,9 @@ public final class KailleraGameImpl implements KailleraGame {
             if (autoFireDetector != null)
                 autoFireDetector.stop(playerNumber);
 
-            if (getPlayingCount() == 0)
-                setStatus(KailleraGame.STATUS_WAITING);
+            // A drop during an active round invalidates the queue snapshot. Reset
+            // the room instead of continuing to assemble frames with a stale slot.
+            abortRound("player dropped during an active round");
 
             addEvent(new UserDroppedGameEvent(this, user, playerNumber));
         } finally {
@@ -600,6 +626,11 @@ public final class KailleraGameImpl implements KailleraGame {
             }
 
             log.info(user + " quit: " + this);
+
+            // The queue snapshot contains the departed player's slot. Any active
+            // round must end now, or the remaining clients decode a malformed frame
+            // and the room can never become ready again.
+            abortRound("player quit during an active round");
 
             addEvent(new UserQuitGameEvent(this, user));
         } finally {
@@ -632,11 +663,16 @@ public final class KailleraGameImpl implements KailleraGame {
                 log.info(this + ": game desynched: game closed!");
             }
 
+            playerActionQueues = null;
+            acceptedBytesPerAction = -1;
+            assemblyTasks.clear();
+
             for (KailleraUserImpl player : players) {
                 // Detached players must not stay in STATUS_PLAYING, otherwise
                 // createGame()/joinGame() reject them for the rest of the session.
                 if (player.getStatus() == KailleraUser.STATUS_PLAYING)
                     player.setStatus(KailleraUser.STATUS_IDLE);
+                player.setPlayerNumber(-1);
                 player.setGame(null);
             }
 
@@ -726,6 +762,18 @@ public final class KailleraGameImpl implements KailleraGame {
 
             bytesPerAction = data.length / actions;
 
+            // A frame assembled with one player's stride is misaligned for every
+            // client that expects another. The first accepted payload fixes the
+            // stride for the round; everyone after it must agree.
+            int expectedStride = acceptedBytesPerAction;
+            if (expectedStride < 0) {
+                acceptedBytesPerAction = bytesPerAction;
+            } else if (expectedStride != bytesPerAction) {
+                log.warn(this + ": addData failed: inconsistent action size " + bytesPerAction
+                        + " (expected " + expectedStride + ")");
+                throw new GameDataException("Inconsistent game data action size");
+            }
+
             // Check for integer overflow before array allocation
             if (numPlayers > Integer.MAX_VALUE / data.length) {
                 log.error(this + ": addData failed: array size overflow");
@@ -746,16 +794,69 @@ public final class KailleraGameImpl implements KailleraGame {
         if (autoFireDetector != null)
             autoFireDetector.addData(playerNumber, data, bytesPerAction);
 
-        int arraySize = (numPlayers * data.length);
-        byte[] response = new byte[arraySize];
+        // Assemble on the game's serial worker, not the sender's receive thread.
+        PlayerActionQueue[] queuesForFrame = queues;
+        int actionsForFrame = actions;
+        int numPlayersForFrame = numPlayers;
+        int bytesPerActionForFrame = bytesPerAction;
+        byte[] sourceData = data;
+        scheduleAssembly(() -> assembleFrame(user, queuesForFrame, actionsForFrame,
+                numPlayersForFrame, bytesPerActionForFrame, sourceData, playerNumber));
+    }
+
+    private void scheduleAssembly(Runnable task) {
+        assemblyTasks.add(task);
+        if (!assemblyDrainScheduled.compareAndSet(false, true))
+            return;
+
+        EmuLinkerExecutor pool = server.getThreadPool();
+        if (pool == null) {
+            // Unit tests construct the game with a mocked server and no executor.
+            // Production always has the virtual-thread pool.
+            drainAssembly();
+            return;
+        }
+
+        try {
+            pool.execute(this::drainAssembly);
+        } catch (RuntimeException e) {
+            // The pool is shutting down; queued frames can never be delivered.
+            assemblyDrainScheduled.set(false);
+            assemblyTasks.clear();
+            log.debug(this + ": frame assembly rejected during shutdown", e);
+        }
+    }
+
+    private void drainAssembly() {
+        while (true) {
+            Runnable task = assemblyTasks.poll();
+            if (task == null) {
+                assemblyDrainScheduled.set(false);
+                // A producer may have added work between poll() and clearing the
+                // flag; only one drainer may continue.
+                if (assemblyTasks.isEmpty() || !assemblyDrainScheduled.compareAndSet(false, true)) {
+                    return;
+                }
+                continue;
+            }
+
+            try {
+                task.run();
+            } catch (RuntimeException e) {
+                log.error(this + ": frame assembly failed", e);
+            }
+        }
+    }
+
+    private void assembleFrame(KailleraUser user, PlayerActionQueue[] queues, int actions,
+            int numPlayers, int bytesPerAction, byte[] sourceData, int playerNumber) {
+        byte[] response = new byte[numPlayers * sourceData.length];
         // Consecutive timeouts are counted per lagged player. One assembler's
         // wait on player A must not advance the desync count of player B.
         int[] timeoutCounts = new int[numPlayers];
-        int actionCounter;
-        int playerCounter;
 
-        for (actionCounter = 0; actionCounter < actions; actionCounter++) {
-            for (playerCounter = 0; playerCounter < numPlayers; playerCounter++) {
+        for (int actionCounter = 0; actionCounter < actions; actionCounter++) {
+            for (int playerCounter = 0; playerCounter < numPlayers; playerCounter++) {
                 while (synched && playerActionQueues == queues) {
                     try {
                         queues[playerCounter]
@@ -778,13 +879,66 @@ public final class KailleraGameImpl implements KailleraGame {
             }
         }
 
-        // A restart replaces the queue array; a response assembled against the old
-        // game state must not be delivered to the new one.
-        if (!synched || playerActionQueues != queues)
-            throw new GameDataException(EmuLang.getString("KailleraGameImpl.DesynchedWarning"),
-                    data, actions, playerNumber, numPlayers);
+        // A restart or abort replaced the queue array; a response assembled against
+        // the old round must not be delivered to the new one.
+        if (playerActionQueues != queues)
+            return;
 
-        ((KailleraUserImpl) user).addEvent(new GameDataEvent(this, response));
+        if (!synched) {
+            // Preserve the old desync response: reflect the sender's input so the
+            // client does not wait forever for a frame that will not arrive.
+            GameDataException failure = new GameDataException(
+                    EmuLang.getString("KailleraGameImpl.DesynchedWarning"), sourceData, actions,
+                    playerNumber, numPlayers);
+            if (failure.hasResponse() && user.getGame() == this)
+                ((KailleraUserImpl) user).addEvent(new GameDataEvent(this, failure.getResponse()));
+            return;
+        }
+
+        if (user.getGame() == this)
+            ((KailleraUserImpl) user).addEvent(new GameDataEvent(this, response));
+    }
+
+    /**
+     * Ends the current synchronized round and returns the room to the waiting
+     * state. The caller must hold the game write lock.
+     *
+     * <p>
+     * The player list and the queue snapshot are only valid together. A membership
+     * change during SYNCHRONIZING or PLAYING invalidates every slot number, so the
+     * round is discarded and the room is restartable instead of corrupting frames
+     * or waiting forever for a departed player.
+     */
+    private void abortRound(String reason) {
+        boolean active = synched || playerActionQueues != null
+                || status == KailleraGame.STATUS_SYNCHRONIZING
+                || status == KailleraGame.STATUS_PLAYING;
+        if (!active)
+            return;
+
+        synched = false;
+        PlayerActionQueue[] queues = playerActionQueues;
+        playerActionQueues = null;
+        acceptedBytesPerAction = -1;
+        assemblyTasks.clear();
+        if (queues != null) {
+            for (PlayerActionQueue q : queues)
+                q.setSynched(false);
+        }
+
+        if (autoFireDetector != null)
+            autoFireDetector.stop();
+
+        for (KailleraUserImpl player : players) {
+            player.setPlayerNumber(-1);
+            if (player.getStatus() == KailleraUser.STATUS_PLAYING)
+                player.setStatus(KailleraUser.STATUS_IDLE);
+        }
+
+        if (status != KailleraGame.STATUS_WAITING)
+            setStatus(KailleraGame.STATUS_WAITING);
+
+        log.info(this + ": round aborted: " + reason);
     }
 
     // Called from addData(); acquires the write lock itself.

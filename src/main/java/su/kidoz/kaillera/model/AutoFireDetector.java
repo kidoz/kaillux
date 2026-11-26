@@ -1,7 +1,12 @@
-package su.kidoz.kaillera.model.impl;
+package su.kidoz.kaillera.model;
 
-import su.kidoz.kaillera.model.KailleraUser;
-
+/**
+ * Detects rapid alternating input that suggests an auto-fire controller.
+ *
+ * <p>
+ * The detector lives in the model package so the domain interfaces do not have
+ * to depend on an implementation package.
+ */
 public interface AutoFireDetector {
     void start(int numPlayers);
     void addPlayer(KailleraUser user, int playerNumber);

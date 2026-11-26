@@ -303,6 +303,20 @@ class KailleraServerConcurrencyTest {
         assertThrows(CreateGameException.class, () -> user.createGame("AnotherROM"));
     }
 
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void quittingAnOwnerRemovesTheGame() throws Exception {
+        KailleraUser owner = logInUser(1);
+        KailleraGame game = owner.createGame("OwnerQuitROM");
+        assertEquals(1, server.getNumGames());
+
+        owner.quit("done");
+
+        assertEquals(0, server.getNumGames(), "the owned room must not outlive its owner");
+        assertTrue(server.getGames().stream()
+                .noneMatch(candidate -> candidate.getID() == game.getID()));
+    }
+
     // Helper classes
 
     /**
@@ -376,6 +390,26 @@ class KailleraServerConcurrencyTest {
             @Override
             public int getMaxUsers() {
                 return 200;
+            }
+
+            @Override
+            public int getMaxUsersPerAddress() {
+                return 0;
+            }
+
+            @Override
+            public int getMaxConnecting() {
+                return 0;
+            }
+
+            @Override
+            public int getMaxConnectingPerAddress() {
+                return 0;
+            }
+
+            @Override
+            public int getHelloRatePerSecond() {
+                return 0;
             }
 
             @Override

@@ -32,21 +32,28 @@ public class ServerConfig {
      * disables the cap. These sessions do not consume logged-in slots.
      */
     @Min(0)
-    private int maxConnecting = 0;
+    private int maxConnecting = 10;
 
     /**
      * In-progress handshakes allowed from one source address. Zero disables the
      * cap. Logged-in users do not count against it.
      */
     @Min(0)
-    private int maxConnectingPerAddress = 0;
+    private int maxConnectingPerAddress = 3;
+
+    /**
+     * Logged-in users allowed from one source address. Zero disables the cap. Admin
+     * and elevated clients bypass it. Keep it above one for NAT.
+     */
+    @Min(0)
+    private int maxUsersPerAddress = 10;
 
     /**
      * HELLO messages accepted per source address per second. Zero disables the
      * limit.
      */
     @Min(0)
-    private int helloRatePerSecond = 0;
+    private int helloRatePerSecond = 5;
 
     @Min(0)
     private int maxGames = 0;
@@ -66,6 +73,9 @@ public class ServerConfig {
 
     @Min(0)
     private int createGameFloodTime = 2;
+
+    @Min(0)
+    private int joinGameFloodTime = 1;
 
     @Min(1)
     private int maxUserNameLength = 45;
@@ -124,6 +134,14 @@ public class ServerConfig {
         this.maxConnectingPerAddress = maxConnectingPerAddress;
     }
 
+    public int getMaxUsersPerAddress() {
+        return maxUsersPerAddress;
+    }
+
+    public void setMaxUsersPerAddress(int maxUsersPerAddress) {
+        this.maxUsersPerAddress = maxUsersPerAddress;
+    }
+
     public int getHelloRatePerSecond() {
         return helloRatePerSecond;
     }
@@ -170,6 +188,14 @@ public class ServerConfig {
 
     public void setIdleTimeout(int idleTimeout) {
         this.idleTimeout = idleTimeout;
+    }
+
+    public int getJoinGameFloodTime() {
+        return joinGameFloodTime;
+    }
+
+    public void setJoinGameFloodTime(int joinGameFloodTime) {
+        this.joinGameFloodTime = joinGameFloodTime;
     }
 
     public int getChatFloodTime() {
