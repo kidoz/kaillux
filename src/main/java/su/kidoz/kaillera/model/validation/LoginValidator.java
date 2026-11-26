@@ -7,7 +7,6 @@ import su.kidoz.kaillera.model.exception.ClientAddressException;
 import su.kidoz.kaillera.model.exception.LoginException;
 import su.kidoz.kaillera.model.exception.PingTimeException;
 import su.kidoz.kaillera.model.exception.UserNameException;
-import su.kidoz.kaillera.model.impl.KailleraUserImpl;
 import su.kidoz.util.EmuLang;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -190,11 +189,11 @@ public class LoginValidator {
      * @return the existing user if this is a reconnect attempt (same name and
      *         address), null otherwise
      */
-    public KailleraUserImpl checkDuplicateLogin(KailleraUser user, KailleraUser userFromList,
-            Iterable<KailleraUserImpl> allUsers, int access) throws ClientAddressException {
-        KailleraUserImpl reconnectUser = null;
+    public KailleraUser checkDuplicateLogin(KailleraUser user, KailleraUser userFromList,
+            Iterable<? extends KailleraUser> allUsers, int access) throws ClientAddressException {
+        KailleraUser reconnectUser = null;
 
-        for (KailleraUserImpl existingUser : allUsers) {
+        for (KailleraUser existingUser : allUsers) {
             if (!existingUser.isLoggedIn()) {
                 continue;
             }

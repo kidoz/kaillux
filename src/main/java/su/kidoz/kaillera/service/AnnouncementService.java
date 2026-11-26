@@ -2,9 +2,9 @@ package su.kidoz.kaillera.service;
 
 import java.util.Collection;
 
+import su.kidoz.kaillera.model.KailleraGame;
+import su.kidoz.kaillera.model.KailleraUser;
 import su.kidoz.kaillera.model.event.InfoMessageEvent;
-import su.kidoz.kaillera.model.impl.KailleraGameImpl;
-import su.kidoz.kaillera.model.impl.KailleraUserImpl;
 
 /**
  * Service for sending announcements to users and games.
@@ -25,9 +25,10 @@ public class AnnouncementService {
      *            all active games (may be null if gamesAlso is false)
      */
     public void announce(final String announcement, final boolean gamesAlso,
-            final Collection<KailleraUserImpl> users, final Collection<KailleraGameImpl> games) {
+            final Collection<? extends KailleraUser> users,
+            final Collection<? extends KailleraGame> games) {
         // Send to all logged-in users
-        for (final KailleraUserImpl user : users) {
+        for (final KailleraUser user : users) {
             if (user.isLoggedIn()) {
                 user.addEvent(new InfoMessageEvent(user, announcement));
             }
@@ -35,7 +36,7 @@ public class AnnouncementService {
 
         // Optionally send to all active games
         if (gamesAlso && games != null) {
-            for (final KailleraGameImpl game : games) {
+            for (final KailleraGame game : games) {
                 game.announce(announcement);
             }
         }
@@ -49,7 +50,7 @@ public class AnnouncementService {
      * @param announcement
      *            the announcement message
      */
-    public void announceToUser(final KailleraUserImpl user, final String announcement) {
+    public void announceToUser(final KailleraUser user, final String announcement) {
         if (user.isLoggedIn()) {
             user.addEvent(new InfoMessageEvent(user, announcement));
         }
