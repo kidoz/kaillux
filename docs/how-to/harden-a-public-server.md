@@ -17,11 +17,13 @@ the internet. It assumes you have already read
 
   Activating the `prod` or `production` Spring profile has the same effect.
 
-- Bind the HTTP listener to a private interface or put it behind a firewalled
+- Keep `server.address` on `127.0.0.1`, or put the listener behind a firewalled
   reverse proxy. The Compose file binds 8080 to `127.0.0.1`; keep that pattern.
+  Set `admin.security.trusted-proxies` when a proxy fronts the server.
 - Terminate TLS at the proxy. Kaillux serves plain HTTP.
-- Restrict `/api-docs`, `/swagger-ui.html`, `/metrics`, and `/healthz` at the
-  proxy if they should not be public. The application leaves them open.
+- `/api-docs`, `/swagger-ui.html`, and `/metrics` require the admin credentials;
+  `/healthz` and the actuator health/info endpoints stay public. Restrict all of
+  them at the proxy if they should not be reachable at all.
 - Do not reuse the admin password anywhere else.
 
 ## 2. Restrict who may connect
@@ -104,6 +106,9 @@ desyncs; measure before changing them.
 - Run as an unprivileged account. The Arch service already does this and enables
   systemd hardening options. The container image runs as the unprivileged user
   `kaillux`, and `compose.yaml` drops all capabilities.
+- Treat a `user,ADMIN` rule as a network-trust statement, not an authentication
+  mechanism: UDP source addresses are spoofable, so the in-game command guard
+  also requires a recent dashboard authentication from the same address.
 - Restrict `access.cfg` and any file containing the admin password to the
   service account (`chmod 600`).
 - Keep the JVM and OS patched.

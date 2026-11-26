@@ -33,8 +33,9 @@ sessions open.
 
 Blocking operations are expected:
 
-- `DatagramChannel.receive` blocks; the socket timeout is one second so the
-  loop can observe shutdown.
+- `DatagramChannel.receive` blocks; shutdown closes the channel, which makes
+  the blocked receive return. The socket has no read timeout because it has no
+  effect on a blocking `DatagramChannel`.
 - `PlayerActionQueue` readers and writers wait on monitors with timeouts.
 - The maintenance tasks sleep for long intervals.
 
@@ -53,14 +54,18 @@ synchronization:
   lists.
 - `PlayerActionQueue` synchronizes each queue independently.
 
-The lock order matters. Login performs user notifications after releasing the
-connection lock where possible, and forced disconnects for reconnects happen
-after releasing it, to avoid inverting the lock order between a user's monitor
-and the connection lock.
+The lock order is user monitor, then `connectionLock`, then game locks. The
+user's `login()` and `quit()` hold its monitor and enter the server; admin and
+maintenance callers of `server.quit()` take the user monitor first for the same
+reason. Forced disconnects for reconnects happen after releasing the connection
+lock.
 
-Game input assembly deliberately runs outside the game write lock. If it held
-the lock while waiting for every player's queue, the other players' receive
-threads could not enqueue their input, and the wait could never finish.
+Game input assembly runs on a serial worker owned by the game, not on the
+sender's UDP receive thread. It reads the per-player queues without the game
+write lock, and a lagging player can therefore never stall another client's
+keepalive, chat, or input processing. A round whose membership changes is
+aborted: the queue snapshot is discarded and the room returns to the waiting
+state.
 
 ## Event queues
 
@@ -69,15 +74,17 @@ event loop renders and sends them. This decouples packet processing from
 outbound I/O and keeps a slow or blocked client from stalling another client's
 processing.
 
-When the queue is full, events are dropped and counted. `GET
-/api/admin/event-metrics` reports queue size, dropped events, and utilization
-per user. A sustained high drop count for one user is a sign that its client is
-not consuming traffic fast enough.
+When the queue is full, events are dropped and counted; critical events wait
+briefly before giving up. After 50 consecutive drops the session is closed, so
+a client that cannot keep up reconnects and receives fresh state rather than
+staying permanently stale. `GET /api/admin/event-metrics` reports queue size,
+dropped events, and utilization per user.
 
 ## Shutdown
 
-Most components implement `SmartLifecycle`, so Spring stops them in phase
-order. UDP servers set a stop flag and close their channels; the receive loops
-then exit within the one-second socket timeout. Virtual threads are interrupted
+Most components implement `SmartLifecycle`, so Spring starts and stops them in
+phase order. Running state is latched before a worker is submitted and cleared
+by `stop()`, so a stop that races with startup is not lost. UDP servers close
+their channels, which wakes a blocked receive. Virtual threads are interrupted
 or allowed to finish. The access manager and maintenance tasks observe stop
 flags and exit their loops.

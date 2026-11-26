@@ -21,8 +21,14 @@ curl -si http://127.0.0.1:8080/healthz
 
 ## Prometheus metrics
 
-Scrape `http://127.0.0.1:8080/metrics`. The endpoint is public, so restrict it
-at the network or proxy layer if the server is publicly reachable.
+Scrape `http://127.0.0.1:8080/metrics` with the admin credentials:
+
+```bash
+curl -s -u "$AUTH" http://127.0.0.1:8080/metrics
+```
+
+The endpoint requires authentication. Configure Prometheus with the same
+Basic credentials and keep the listener on loopback or behind a TLS proxy.
 
 Minimal Prometheus configuration:
 

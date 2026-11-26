@@ -24,6 +24,13 @@ An address gets admin access in one of two ways:
 Temporary admin expires after the given number of minutes and is not persisted
 across restarts. It applies to the source address, not the user name.
 
+In-game admin commands also require a trusted source: loopback, an address
+matching `admin.trusted-in-game-addresses`, or an address that completed a
+dashboard login within `admin.in-game-admin-ttl-seconds` (30 minutes by
+default). This prevents a spoofed UDP source from using an admin access rule
+blindly. Sign in to the dashboard from the admin machine before using
+`/ban`, `/kick`, `/tempadmin`, or the other privileged commands.
+
 ## Find IDs
 
 Most moderation commands take a user or game ID. Find them with:

@@ -35,11 +35,13 @@ healthy container reports `healthy` in `docker compose ps`.
 | Admin dashboard | <http://127.0.0.1:8080/admin/> |
 | Admin API | `http://127.0.0.1:8080/api/admin/` |
 | Health | `http://127.0.0.1:8080/healthz` |
-| Metrics | `http://127.0.0.1:8080/metrics` |
+| Metrics | `http://127.0.0.1:8080/metrics` (admin credentials required) |
 | Kaillera connect | UDP 27888 |
 | Kaillera data ports | UDP 27889–27924 |
 
-Compose publishes port 8080 on `127.0.0.1` only, so the admin surface is not
+The image sets `SERVER_ADDRESS=0.0.0.0` so the published port can reach it.
+Compose publishes port 8080 on `127.0.0.1` only and runs the container with a
+read-only root filesystem plus a `/tmp` tmpfs, so the admin surface is not
 reachable from other hosts by default. The UDP ports are published on all
 interfaces.
 

@@ -23,7 +23,8 @@ Lists are comma-separated in both forms. Changes require a restart; only
 | `controllers.connect.port` | `27888` | Public UDP port for the initial handshake. |
 | `controllers.connect.buffer-size` | `1024` | Receive buffer for connect-port datagrams, in bytes. |
 | `controllers.v086.port-range-start` | `27889` | First data port. |
-| `controllers.v086.extra-ports` | `10` | Spare data ports beyond `server.max-users`. The allocated count is `max-users + extra-ports + 1`. |
+| `controllers.v086.extra-ports` | `10` | Spare data ports beyond `server.max-users`. The allocated count is `max-users + max-connecting + extra-ports + 1` unless `max-sessions` is set. |
+| `controllers.v086.max-sessions` | `0` | Explicit data-socket pool size. 0 derives it from the admission limits. The pool bounds concurrent sessions even when `server.max-users=0`. |
 | `controllers.v086.buffer-size` | `2048` | Receive buffer for data-port datagrams, in bytes. |
 | `controllers.v086.client-types` | `0.83` | Client protocol versions routed to the v0.86 controller. |
 
@@ -33,7 +34,8 @@ Lists are comma-separated in both forms. Changes require a restart; only
 |---|---|---|
 | `server.max-ping` | `250` | Maximum login ping in milliseconds for normal users. Also drives the maintenance interval (`max(1000, max-ping * 3)` ms), the handshake timeout (`max-ping * 15` ms once the client has started logging in), and the timeout for a HELLO that is never followed by a login (`max(1500, max-ping * 6)` ms). |
 | `server.allowed-connection-types` | `1,2,3,4,5,6` | Connection types normal users may use. |
-| `server.max-users` | `25` | Maximum logged-in users. Elevated and admin users bypass it. 0 disables the cap. |
+| `server.max-users` | `25` | Maximum logged-in users. Elevated and admin users bypass it. 0 disables the cap, leaving `controllers.v086.max-sessions` as the socket bound. |
+| `server.max-users-per-address` | `10` | Maximum logged-in users from one source address. Elevated and admin users bypass it. 0 disables the cap. Keep it above one for NAT. |
 | `server.max-connecting` | `10` | Maximum in-progress handshakes. 0 disables the cap. |
 | `server.max-connecting-per-address` | `3` | Share of the in-progress handshakes that one source address may hold. Keep it well below `max-connecting`: a HELLO can carry a spoofed source address. 0 disables the cap. |
 | `server.hello-rate-per-second` | `5` | Maximum HELLO messages per source per second. 0 disables the limit. |
@@ -44,6 +46,7 @@ Lists are comma-separated in both forms. Changes require a restart; only
 | `server.idle-timeout` | `900` | Seconds without activity before an idle normal user is disconnected. 0 disables it. |
 | `server.chat-flood-time` | `2` | Minimum seconds between chat messages from one user. 0 disables the interval. |
 | `server.create-game-flood-time` | `2` | Minimum seconds between one user's attempts to create a game. Every attempt counts, whether or not it succeeded, so a denied request cannot be retried at once. 0 disables the interval. |
+| `server.join-game-flood-time` | `1` | Minimum seconds between one user's attempts to join a room. Limits the lobby-wide events a join/leave cycle can generate. 0 disables the interval. |
 | `server.max-user-name-length` | `45` | Maximum user name length in characters. |
 | `server.max-client-name-length` | `100` | Maximum emulator/client name length in characters. |
 | `server.max-chat-length` | `150` | Maximum chat message length in characters. |
@@ -88,8 +91,12 @@ classpath. See [Access configuration file](access-config-file.md).
 | Property | Default | Description |
 |---|---|---|
 | `admin.username` | `admin` (or `ADMIN_USERNAME`) | Admin API and dashboard username. |
-| `admin.password` | `${ADMIN_PASSWORD:}` | Admin password. When blank, a random password is generated and printed once to the console. |
+| `admin.password` | `${ADMIN_PASSWORD:}` | Admin password. When blank, a random password is generated in development; the `prod`/`production` profiles refuse startup instead. |
 | `admin.security.failOnInsecureCredentials` | `false` | Refuse startup when the username is the default or the password is a known-weak value. The `prod`/`production` profiles imply this. |
+| `admin.in-game-admin-ttl-seconds` | `1800` | How long a dashboard-authenticated source address stays trusted for in-game admin commands. 0 requires a dashboard login per command. |
+| `admin.trusted-in-game-addresses` | empty | Comma-separated wildcard addresses (for example `10.0.0.*`) allowed to use in-game admin without a dashboard login. Loopback is always allowed. |
+| `admin.security.trusted-proxies` | empty | Reverse-proxy addresses whose `X-Forwarded-For` header may select the login-failure bucket. |
+| `server.address` | `${SERVER_ADDRESS:127.0.0.1}` | HTTP listener bind address. Keep it on loopback unless a TLS proxy fronts it. |
 
 ## Relay
 
@@ -97,10 +104,14 @@ classpath. See [Access configuration file](access-config-file.md).
 |---|---|---|
 | `relay.enabled` | `false` | Enable relay mode. Requires a restart. |
 | `relay.listen-port` | `27887` | Public UDP port for relayed handshakes. |
+| `relay.bind-address` | `0.0.0.0` | Local address for relay sockets. Set a specific address when the relay is reachable on one network only. |
 | `relay.backend-host` | `localhost` | Backend server hostname or address. Resolved at startup. |
 | `relay.backend-port` | `27888` | Backend connect port. |
 | `relay.max-connections` | `100` | Maximum concurrent relayed clients per relay controller. |
 | `relay.buffer-size` | `2048` | Relay UDP buffer size in bytes, 512–65536. |
+| `relay.data-port-range-start` | `27889` | First data port the backend may assign. Assignments outside the range are refused. |
+| `relay.data-port-range-end` | `65535` | Last data port the backend may assign. |
+| `relay.max-relay-ports` | `100` | Maximum number of dynamically spawned data relays kept at once. |
 | `relay.idle-timeout-seconds` | `300` | Stop a data-port relay after this many seconds without traffic. 0 disables cleanup. |
 | `relay.cleanup-interval-seconds` | `60` | How often to check for idle relays, 10–3600. |
 

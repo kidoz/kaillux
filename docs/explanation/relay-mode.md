@@ -33,7 +33,7 @@ rewrite message numbers, buffer content, or player data.
 
 `KailleraRelayController` implements the connect-port side:
 
-- listens on `relay.listen-port`;
+- listens on `relay.listen-port`, bound to `relay.bind-address`;
 - forwards each `HELLO` to `relay.backend-host:relay.backend-port`;
 - reads `HELLOD00D` from the backend and starts a `V086RelayController` on the
   same numeric port locally;
@@ -61,10 +61,18 @@ Relay mode adds a second port range to the deployment:
 | `relay.listen-port` (default 27887) | Public UDP | Clients connect here. |
 | Backend-assigned data ports | Public UDP | The relay must be able to bind the same port numbers locally, and clients must be able to reach them. |
 
+The relay accepts only assignments inside `relay.data-port-range-start` to
+`relay.data-port-range-end` (default `27889`–`65535`) and keeps at most
+`relay.max-relay-ports` data relays. An assignment outside the range, or one
+that collides with `relay.listen-port` or the backend connect port, is refused.
+Set the range to the backend's actual data-port window rather than leaving it
+wide open.
+
 The data-port range published by the relay must cover every port the backend
 can assign. If the backend uses the default Kaillux sizing, that is
-`backend max-users + backend extra-ports + 1` ports starting at the backend's
-`port-range-start`. A relay cannot forward a data port it cannot bind.
+`backend max-users + backend max-connecting + backend extra-ports + 1` ports
+starting at the backend's `port-range-start`. A relay cannot forward a data port
+it cannot bind.
 
 The backend must be reachable from the relay on both its connect port and its
 data-port range.

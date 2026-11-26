@@ -13,6 +13,14 @@ server therefore treats the source address as the only stable identity:
 - admin chat commands verify that the command arrived from the peer address that
   performed the handshake;
 - access rules, temporary bans, and admin grants are keyed by address;
+- in-game admin commands additionally require loopback, an address listed in
+  `admin.trusted-in-game-addresses`, or an address that completed a dashboard
+  login within `admin.in-game-admin-ttl-seconds`. A spoofer that never receives
+  a packet cannot authenticate over TCP;
+- data ports are allocated in random order, and `server.max-users-per-address`
+  limits how many logged-in sessions one source can hold. These make blind
+  session hijacking and one-host capacity exhaustion harder but do not remove
+  the protocol's reliance on source addresses;
 - until the login completes, the data port accepts only the three messages of
   the login handshake; every other command is dropped without effect;
 - the identity is fixed once the login completes: a later `UserInformation`
@@ -40,7 +48,9 @@ The admin API uses HTTP Basic authentication with a single account:
 
 If no password is configured, the server generates a 24-byte random password,
 prints it once to standard error, and does not write it to the application log.
-The password is hashed in memory with BCrypt.
+With the `prod` or `production` profile active, startup is refused instead:
+captured container or journal output would store the generated secret. The
+password is hashed in memory with BCrypt.
 
 The server warns at startup when the username is the default or the password is
 one of a small set of common values. With the `prod` or `production` profile
@@ -56,11 +66,13 @@ logs a warning when it loads such a rule.
 Each authenticated request checks the password with BCrypt, which costs tens of
 milliseconds of CPU whether or not the password is right. An address that
 fails authentication ten times within a minute is refused with 401 before the
-check, until the window passes. Addresses come from the connection, so clients
-behind a reverse proxy share one budget.
+check, until the window passes. Addresses come from the connection unless the
+connection is from an address listed in `admin.security.trusted-proxies`, in
+which case `X-Forwarded-For` is honoured. The failure table is bounded and
+evicts the oldest window instead of becoming unlimited when full.
 
-The admin UI keeps the Basic authorization header in `sessionStorage`, so it is
-scoped to the tab and cleared when the session ends. It does not use cookies.
+The admin UI keeps the Basic authorization header in memory only, so a page
+reload requires signing in again. It does not use cookies or `sessionStorage`.
 
 ## HTTP surface
 
@@ -68,15 +80,18 @@ Security is stateless and CSRF protection is disabled, because every admin
 request carries credentials explicitly rather than relying on an ambient cookie.
 If cookie-based sessions are added later, CSRF protection must be re-enabled.
 
+The rule list is default-deny: every path not listed below is refused.
+
 | Path | Access |
 |---|---|
 | `/api/admin/**`, `/api/v1/admin/**` | Authenticated. |
-| `/metrics` | Public. |
-| `/healthz`, `/healthz/liveness`, `/healthz/readiness` | Public. |
-| `/actuator/health`, `/actuator/info` | Public. |
+| `/metrics` | Authenticated. Prometheus must present the admin credentials. |
+| `/healthz`, `/healthz/**` | Public. |
+| `/actuator/health`, `/actuator/health/**`, `/actuator/info` | Public. |
 | Other `/actuator/**` endpoints | Authenticated. |
-| `/admin/`, static assets | Public; the UI itself asks for credentials. |
-| `/api-docs`, `/swagger-ui.html` | Public by default. |
+| `/admin`, `/admin/`, `/admin/**` | Public; the UI itself asks for credentials. |
+| `/api-docs/**`, `/swagger-ui.html`, `/swagger-ui/**` | Authenticated. |
+| Anything else | Refused. |
 
 A missing or invalid credential returns HTTP 401 without a
 `WWW-Authenticate` challenge. This is deliberate: a browser challenge would
@@ -84,13 +99,15 @@ open the browser's own login dialog and leave `fetch()` waiting, which breaks
 the dashboard's ability to report a rejected password.
 
 Every response carries a Content Security Policy: scripts may only be loaded
-from the server itself. The dashboard keeps its credential where any script on
-the admin origin could read it, and the public Swagger UI is served from that
-same origin.
+from the server itself. The dashboard keeps its credential in memory, and the
+Swagger UI and API documentation now require authentication on the same origin.
 
-The server serves plain HTTP. If the admin surface must cross an untrusted
-network, put a TLS-terminating reverse proxy in front of it and restrict access
-there. The bundled Compose file binds port 8080 to `127.0.0.1` for this reason.
+The server serves plain HTTP and binds the admin connector to `127.0.0.1` by
+default (`server.address`). The container image sets `SERVER_ADDRESS=0.0.0.0`
+so the published port can reach it, and the Compose file publishes that port on
+host loopback only. If the admin surface must cross an untrusted network, put a
+TLS-terminating reverse proxy in front of it, set `admin.security.trusted-proxies`
+to the proxy's address, and restrict access there.
 
 ## Admission and abuse controls
 
@@ -98,11 +115,14 @@ The server has several independent limits that together make a naive flood
 expensive:
 
 - `server.max-users` — logged-in users;
+- `server.max-users-per-address` — logged-in sessions from one source;
 - `server.max-connecting` — in-progress handshakes;
 - `server.max-connecting-per-address` — handshakes from one source;
 - `server.hello-rate-per-second` — HELLO messages from one source;
 - `server.max-ping` — high-latency logins;
-- `server.chat-flood-time`, `server.create-game-flood-time` — action frequency;
+- `server.chat-flood-time`, `server.create-game-flood-time`,
+  `server.join-game-flood-time` — action frequency;
+- a fixed per-source budget of 20 PING answers per second;
 - keepalive and idle timeouts — abandoned sessions.
 
 The per-address HELLO limit and the connecting cap are tracked in memory and are

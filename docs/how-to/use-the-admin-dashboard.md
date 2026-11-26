@@ -48,8 +48,10 @@ bans, use the `/ban` chat command; see
 
 ## Authentication and sessions
 
-The dashboard stores the Basic authorization header in `sessionStorage`. It is
-scoped to the browser tab and is not sent as a cookie. **Sign out** clears it.
+The dashboard keeps the Basic authorization header in memory only. It is not
+stored in `sessionStorage` or sent as a cookie, so reloading the page requires
+signing in again. **Sign out** clears it. The HTTP listener binds to
+`127.0.0.1` by default; use a TLS reverse proxy for remote access.
 
 An expired or rejected credential produces HTTP 401. The dashboard then returns
 to the sign-in screen instead of repeatedly retrying. Only a 401 ends the

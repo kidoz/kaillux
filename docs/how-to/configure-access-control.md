@@ -169,7 +169,10 @@ Loaded 8 rules (0 errors)
 ```
 
 If a line is rejected, the count of errors increases and the line is logged with
-its content. Fix the line and save again.
+its content. On a hot reload the last rule set that parsed cleanly stays active.
+At startup there is no previous set, so the server refuses to start rather than
+silently serve traffic with a missing ban or admin rule. Fix the line and start
+again.
 
 Temporary bans, silences, and admin grants are separate from the file and are
 not affected by a reload. See

@@ -62,8 +62,8 @@ services implement `SmartLifecycle`, so startup and shutdown are ordered:
 |---|---|---|
 | 0 | `FileBasedAccessManager` | Access rules must exist before any connection is evaluated. |
 | 10 | `KailleraServerImpl` | Core domain and maintenance thread. |
-| 20 | `V086Controller` | Binds the data-port range before the connect port advertises it. |
-| 30 | `ConnectController` | Starts accepting public handshakes last among the UDP listeners. |
+| 20 | `V086Controller` | Ready to accept and bind per-client data sockets before the connect port advertises them. |
+| 30 | `ConnectController` | Binds and starts accepting public handshakes last among the UDP listeners. |
 | 40 | `MasterListUpdaterImpl` | Advertises the server only after it is fully running. |
 
 ## Request flow
@@ -121,7 +121,7 @@ All production code uses the `su.kidoz` prefix.
 | `su.kidoz.kaillera.master` | Master-list reporting and the server-list statistics collector. |
 | `su.kidoz.kaillera.relay` | Optional UDP relay controllers. |
 | `su.kidoz.kaillera.metrics` | Micrometer game metrics. |
-| `su.kidoz.kaillera.service` | Service layer used by the admin API. |
+| `su.kidoz.kaillera.service` | Chat moderation, announcements, and thin admin user/game services. |
 | `su.kidoz.net` | UDP server and relay primitives. |
 | `su.kidoz.util` | Executor, buffers, caches, wildcard matching, and localization. |
 

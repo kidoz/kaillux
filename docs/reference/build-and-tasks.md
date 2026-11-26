@@ -20,7 +20,7 @@ commands, including the admin UI build.
 | `./gradlew verifyAdminUi` | Check that `src/main/resources/static/admin/dist/` exists. |
 | `./gradlew clean` | Delete `build/`. |
 | `./gradlew test` | Run tests. Load-tagged tests are excluded by default. |
-| `./gradlew check` | Run the full verification lifecycle, including the coverage threshold. |
+| `./gradlew check` | Run the full verification lifecycle, including the coverage threshold. CI runs this and the admin UI checks on every push and pull request. |
 | `./gradlew spotlessCheck` | Verify Java formatting. |
 | `./gradlew spotlessApply` | Apply Java formatting. |
 | `./gradlew checkstyleMain` | Run Checkstyle on main sources. |
@@ -45,7 +45,7 @@ The plain `jar` task is disabled.
 | `just load-test [clients] [timeout]` | Run `ServerLoadTest` with load tests enabled. Arguments are passed to Gradle. |
 | `just load-test-external [clients]` | Run `ExternalServerLoadTest` against `localhost:27888`. |
 | `just e2e-test` | Run `ProtocolE2ETest`, which starts an embedded UDP server. |
-| `just admin-install` | `npm install` in the admin directory. |
+| `just admin-install` | `npm ci` in the admin directory. |
 | `just admin-dev` | Start Vite with HMR. |
 | `just admin-build` | Type-check and build the admin UI. |
 | `just admin-typecheck` | `tsc --noEmit`. |
