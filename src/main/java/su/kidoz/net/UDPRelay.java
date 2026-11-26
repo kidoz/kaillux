@@ -90,6 +90,7 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
     private final long clientIdleTimeoutMs;
 
     private DatagramChannel listenChannel;
+    private InetAddress listenBindAddress;
     private volatile Selector selector;
     private volatile boolean running = false;
     private volatile boolean stopFlag = false;
@@ -307,39 +308,79 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
         // Default: no-op. Subclasses can override.
     }
 
+    /**
+     * Restricts the listen socket to one local address. Must be called before
+     * {@link #start()}.
+     *
+     * @param address
+     *            the local address, or null for the wildcard address
+     */
+    public synchronized void setListenBindAddress(InetAddress address) {
+        if (running) {
+            throw new IllegalStateException("Cannot change the bind address of a running relay");
+        }
+        if (address == null) {
+            this.listenBindAddress = null;
+            return;
+        }
+        try {
+            // InetAddress is not treated as immutable by static analysis; take a
+            // private copy so callers cannot change the relay's bind target.
+            this.listenBindAddress = InetAddress.getByAddress(address.getAddress());
+        } catch (java.net.UnknownHostException e) {
+            throw new IllegalArgumentException("Invalid relay bind address", e);
+        }
+    }
+
     // SmartLifecycle implementation
 
     @Override
-    public void start() {
+    public synchronized void start() {
         if (running) {
             log.debug("{} start request ignored: already running", this);
             return;
         }
 
+        DatagramChannel channel = null;
         try {
-            listenChannel = DatagramChannel.open();
+            channel = DatagramChannel.open();
             // Non-blocking so the main loop can periodically evict idle client
             // handlers even when no packets arrive.
-            listenChannel.configureBlocking(false);
-            // Bind to wildcard address (0.0.0.0) to accept connections on all interfaces
-            listenChannel.socket().bind(new InetSocketAddress(listenPort));
-            log.info("{} bound to port {} on all interfaces", this, listenPort);
+            channel.configureBlocking(false);
+            channel.socket().bind(new InetSocketAddress(listenBindAddress, listenPort));
+            listenChannel = channel;
+            log.info("{} bound to {}:{}", this,
+                    listenBindAddress == null
+                            ? "all interfaces"
+                            : listenBindAddress.getHostAddress(),
+                    listenPort);
 
-            running = true;
             stopFlag = false;
             startTime.set(System.currentTimeMillis());
+            running = true;
 
             threadPool.execute(this);
             log.info("{} started, relaying to {}", this, serverSocketAddress);
         } catch (Exception e) {
             log.error("Failed to start {}: {}", this, e.getMessage(), e);
             running = false;
+            stopFlag = true;
+            // A failed start must not leave the socket bound: stop() previously
+            // returned early because running was already false.
+            if (channel != null) {
+                try {
+                    channel.close();
+                } catch (Exception closeFailure) {
+                    log.debug("Error closing listen channel after failed start", closeFailure);
+                }
+            }
+            listenChannel = null;
         }
     }
 
     @Override
-    public void stop() {
-        if (!running) {
+    public synchronized void stop() {
+        if (!running && listenChannel == null) {
             return;
         }
 
@@ -357,6 +398,8 @@ public abstract class UDPRelay implements SmartLifecycle, Runnable {
             }
         } catch (Exception e) {
             log.debug("Error closing listen channel during stop", e);
+        } finally {
+            listenChannel = null;
         }
 
         // Close all client handlers

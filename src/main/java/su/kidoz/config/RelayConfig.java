@@ -37,6 +37,36 @@ public class RelayConfig {
     private int listenPort = 27887;
 
     /**
+     * Local address to bind relay sockets to. The wildcard default accepts every
+     * interface; set a specific address when the relay is reachable only through
+     * one network.
+     */
+    @NotBlank
+    private String bindAddress = "0.0.0.0";
+
+    /**
+     * First data port the backend is allowed to assign. A compromised backend must
+     * not make the relay bind arbitrary ports on the host.
+     */
+    @Min(1)
+    @Max(65535)
+    private int dataPortRangeStart = 27889;
+
+    /**
+     * Last data port the backend is allowed to assign.
+     */
+    @Min(1)
+    @Max(65535)
+    private int dataPortRangeEnd = 65535;
+
+    /**
+     * Maximum number of dynamically spawned data relays kept at once.
+     */
+    @Min(1)
+    @Max(1000)
+    private int maxRelayPorts = 100;
+
+    /**
      * The hostname or IP address of the backend Kaillera server to relay traffic
      * to.
      */
@@ -94,6 +124,38 @@ public class RelayConfig {
 
     public void setListenPort(int listenPort) {
         this.listenPort = listenPort;
+    }
+
+    public String getBindAddress() {
+        return bindAddress;
+    }
+
+    public void setBindAddress(String bindAddress) {
+        this.bindAddress = bindAddress;
+    }
+
+    public int getDataPortRangeStart() {
+        return dataPortRangeStart;
+    }
+
+    public void setDataPortRangeStart(int dataPortRangeStart) {
+        this.dataPortRangeStart = dataPortRangeStart;
+    }
+
+    public int getDataPortRangeEnd() {
+        return dataPortRangeEnd;
+    }
+
+    public void setDataPortRangeEnd(int dataPortRangeEnd) {
+        this.dataPortRangeEnd = dataPortRangeEnd;
+    }
+
+    public int getMaxRelayPorts() {
+        return maxRelayPorts;
+    }
+
+    public void setMaxRelayPorts(int maxRelayPorts) {
+        this.maxRelayPorts = maxRelayPorts;
     }
 
     public String getBackendHost() {

@@ -1,6 +1,8 @@
 package su.kidoz.kaillera.relay;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.Iterator;
@@ -44,7 +46,7 @@ import su.kidoz.util.ThrottledLogger;
  * <li>Client connects to V086RelayController on assigned port</li>
  * </ol>
  */
-public class KailleraRelayController extends UDPRelay {
+public final class KailleraRelayController extends UDPRelay {
 
     private static final Logger log = LoggerFactory.getLogger(KailleraRelayController.class);
     // Anyone can send to the relay port, so these may not be written once per
@@ -56,6 +58,7 @@ public class KailleraRelayController extends UDPRelay {
     private final ScheduledExecutorService scheduler;
     private final RelayConfig config;
     private final Map<Integer, V086RelayController> v086Relays = new ConcurrentHashMap<>();
+    private final InetAddress relayBindAddress;
     private final long idleTimeoutMs;
 
     private ScheduledFuture<?> cleanupTask;
@@ -100,6 +103,16 @@ public class KailleraRelayController extends UDPRelay {
         this.scheduler = scheduler;
         this.config = config;
         this.idleTimeoutMs = config.getIdleTimeoutSeconds() * 1000L;
+        this.relayBindAddress = parseBindAddress(config.getBindAddress());
+        setListenBindAddress(relayBindAddress);
+    }
+
+    private static InetAddress parseBindAddress(String address) {
+        try {
+            return InetAddress.getByName(address);
+        } catch (UnknownHostException e) {
+            throw new IllegalArgumentException("Invalid relay.bind-address: " + address, e);
+        }
     }
 
     /**
@@ -116,8 +129,17 @@ public class KailleraRelayController extends UDPRelay {
     }
 
     @Override
-    public void start() {
+    public synchronized void start() {
         super.start();
+
+        if (!isRunning()) {
+            // An enabled relay that cannot bind must not look healthy.
+            log.error("Relay did not start; cleanup task is not scheduled");
+            return;
+        }
+        if (cleanupTask != null && !cleanupTask.isDone()) {
+            return;
+        }
 
         // Start periodic cleanup task if idle timeout is enabled
         if (idleTimeoutMs > 0 && config.getCleanupIntervalSeconds() > 0) {
@@ -130,7 +152,7 @@ public class KailleraRelayController extends UDPRelay {
     }
 
     @Override
-    public void stop() {
+    public synchronized void stop() {
         // Cancel cleanup task first
         if (cleanupTask != null) {
             cleanupTask.cancel(false);
@@ -233,21 +255,47 @@ public class KailleraRelayController extends UDPRelay {
             log.info("Backend assigned port {} for client {}", assignedPort,
                     EmuUtil.formatSocketAddress(toAddress));
 
-            // Spawn a V086 relay for this port if not already exists
-            if (!v086Relays.containsKey(assignedPort)) {
-                try {
-                    InetSocketAddress backendAddress = new InetSocketAddress(
-                            getServerSocketAddress().getAddress(), assignedPort);
+            if (assignedPort < config.getDataPortRangeStart()
+                    || assignedPort > config.getDataPortRangeEnd()
+                    || assignedPort == config.getListenPort()
+                    || assignedPort == getServerSocketAddress().getPort()) {
+                log.warn(
+                        "Refusing backend-assigned data port {}: outside relay.data-port-range"
+                                + " {}-{} or collides with a configured port",
+                        assignedPort, config.getDataPortRangeStart(), config.getDataPortRangeEnd());
+                return null;
+            }
+
+            // Spawn a V086 relay for this port if not already exists. The check and
+            // publication are one critical section: two concurrent HELLOD00D replies
+            // for the same port could otherwise start two relays and leak one.
+            synchronized (v086Relays) {
+                if (!v086Relays.containsKey(assignedPort)) {
+                    if (v086Relays.size() >= config.getMaxRelayPorts()) {
+                        log.warn("Refusing backend-assigned data port {}: relay limit of {} "
+                                + "reached", assignedPort, config.getMaxRelayPorts());
+                        return null;
+                    }
+
                     V086RelayController v086Relay = new V086RelayController(threadPool,
-                            assignedPort, backendAddress, config.getMaxConnections(),
-                            config.getBufferSize());
+                            assignedPort,
+                            new InetSocketAddress(getServerSocketAddress().getAddress(),
+                                    assignedPort),
+                            config.getMaxConnections(), config.getBufferSize());
+                    v086Relay.setListenBindAddress(relayBindAddress);
                     v086Relay.start();
+
+                    if (!v086Relay.isRunning()) {
+                        // Never publish a relay that failed to bind: it would block
+                        // every future assignment of this port.
+                        log.error("Failed to start V086 relay on port {}", assignedPort);
+                        v086Relay.stop();
+                        return null;
+                    }
+
                     v086Relays.put(assignedPort, v086Relay);
-                    log.info("Started V086 relay on port {} -> {}", assignedPort, backendAddress);
-                } catch (Exception e) {
-                    log.error("Failed to start V086 relay on port {}: {}", assignedPort,
-                            e.getMessage(), e);
-                    return null;
+                    log.info("Started V086 relay on port {} -> {}", assignedPort,
+                            v086Relay.getServerSocketAddress());
                 }
             }
         } else if (inMessage instanceof ConnectMessage_TOO) {

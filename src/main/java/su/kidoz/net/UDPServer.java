@@ -130,6 +130,16 @@ public abstract class UDPServer implements Executable {
             // No socket timeout: it has no effect on a blocking DatagramChannel.
             // Shutdown relies on stop() closing the channel, which wakes receive().
         } catch (IOException e) {
+            // The channel is opened before bind; a failed bind would otherwise leak
+            // one descriptor per retry (the port allocator retries five times).
+            if (channel != null) {
+                try {
+                    channel.close();
+                } catch (IOException closeFailure) {
+                    log.debug("Failed to close unbound channel: " + closeFailure.getMessage());
+                }
+                channel = null;
+            }
             String addressStr = address != null ? address.getHostAddress() + ":" : "";
             throw new BindException("Failed to bind to " + addressStr + port, port, e);
         }
